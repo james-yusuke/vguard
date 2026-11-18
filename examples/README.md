@@ -25,7 +25,7 @@ The `vguard` executable is the diagnostic CLI.
 VGUARD_TARGET_V=/path/to/patched/v sh examples/run_crash.sh --json
 ```
 
-The script supports macOS/arm64 with LLDB, and Linux/amd64 and Linux/arm64 with GDB.
+The native examples support macOS/arm64 with LLDB, and Linux/amd64 and Linux/arm64 with GDB.
 
 1. `vguard build` compiles the example to a native binary. It writes the source-to-SSA mapping to
    `program.vgmap.json` and the code generation SSA to `program.vgmap.json.ssa`. Find both files
@@ -38,6 +38,41 @@ The script supports macOS/arm64 with LLDB, and Linux/amd64 and Linux/arm64 with 
 4. VGuard writes the SSA for `crash_here` to `diagnostics/crash-…/crash.ssa` next to `build.json`.
    The line immediately above the mapped instruction contains `>>>`. Find the full path under
    `SSA report` in the terminal or `ssa_file` in JSON.
+
+## Can you predict where it stops?
+
+Read each source first, then pick an example with `--example`. The native example needs the
+same debugger as above. The WebAssembly examples need `wasmtime` on `PATH`.
+
+| Example | What to look at | Target |
+|---|---|---|
+| [`deferred_validation`](crashes/deferred_validation.v) | The program prints that it has finished reading a batch. | Native |
+| [`rounded_divisor`](crashes/rounded_divisor.v) | All three inputs are positive. | WebAssembly |
+| [`division_overflow`](crashes/division_overflow.v) | The division uses a nonzero divisor. | WebAssembly |
+
+```sh
+sh examples/run_crash.sh --list
+sh examples/run_crash.sh --example deferred_validation --json
+sh examples/run_crash.sh --example rounded_divisor --json
+sh examples/run_crash.sh --example division_overflow --json
+```
+
+Each run returns exit code 1 and writes a marked SSA report. Compare the JSON `location` with
+your prediction, then open the file at `ssa_file` to see the marked instruction.
+
+<details>
+<summary>Expected stops and SSA instructions</summary>
+
+- **Deferred validation.** Skipping the empty row leaves the accepted count at 1. After the
+  final message, `defer` runs the validation and deliberately aborts. VGuard reports the
+  [call to `C.abort()`](crashes/deferred_validation.v#L9) as `call` with `caller_frame`.
+- **Rounded divisor.** Integer division makes `3 / 5` equal to 0. The
+  [second division](crashes/rounded_divisor.v#L6) traps with `integer divide by zero` at `sdiv`.
+- **Division overflow.** Dividing the smallest `i64` by `-1` would produce a value one greater
+  than the largest `i64`. The [division](crashes/division_overflow.v#L5) traps with
+  `integer overflow` at `sdiv`.
+
+</details>
 
 ## Memory check
 

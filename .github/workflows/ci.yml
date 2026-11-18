@@ -111,12 +111,18 @@ jobs:
               -prealloc -nocache -o ./v-vguard cmd/v
           )
 
+      - name: Prepare the Linux arm64 runtime object
+        if: matrix.target == 'linux/arm64'
+        working-directory: target-v
+        # The pinned native linker uses this os module object as a link input.
+        run: clang -fPIC -c vlib/os/execute_capture_nix.c -o vlib/os/execute_capture_nix.o
+
       - name: Check formatting and run tests
         env:
           VFLAGS: "-cc clang -gc none"
           VGUARD_TEST_COMPILER: ${{ github.workspace }}/target-v/v-vguard
         run: |
-          ../host-v/v fmt -verify ./*.v examples/crash.v examples/memory_scan/main.v
+          ../host-v/v fmt -verify ./*.v examples/crash.v examples/crashes/*.v examples/memory_scan/main.v
           sh -n examples/run_crash.sh
           ../host-v/v test .
 
@@ -131,12 +137,17 @@ jobs:
           "$work/vguard" --help
           target_v="$GITHUB_WORKSPACE/target-v/v-vguard"
 
-          "$work/vguard" build examples/crash.v --v "$target_v" --target "$VGUARD_TARGET" \
-            --backend "$VGUARD_BACKEND" --out "$work/crash-build" --v-arg -gc --v-arg none
-          status=0
-          "$work/vguard" run "$work/crash-build/build.json" --json > "$work/artifacts/crash.json" || status=$?
-          cat "$work/artifacts/crash.json"
-          test "$status" -eq 1
+          for source in examples/crash.v examples/crashes/deferred_validation.v; do
+            example=$(basename "$source" .v)
+            build="$work/$example-build"
+            report="$work/artifacts/$example.json"
+            "$work/vguard" build "$source" --v "$target_v" --target "$VGUARD_TARGET" \
+              --backend "$VGUARD_BACKEND" --out "$build" --v-arg -gc --v-arg none
+            status=0
+            "$work/vguard" run "$build/build.json" --json > "$report" || status=$?
+            cat "$report"
+            test "$status" -eq 1
+          done
 
           "$work/vguard" build examples/memory_scan --v "$target_v" --target "$VGUARD_TARGET" \
             --backend c --memory --out "$work/memory-build"
@@ -151,13 +162,20 @@ jobs:
           from pathlib import Path
 
           artifacts = Path(sys.argv[1])
-          crash = json.loads((artifacts / "crash.json").read_text())
-          assert crash["kind"] == "crash" and "SIGABRT" in crash["reason"], crash
-          assert crash["location"]["file"].endswith("/examples/crash.v"), crash
-          assert crash["location"]["ssa_opcode"] == "call", crash
-          ssa = Path(crash["ssa_file"])
-          assert ">>>" in ssa.read_text(), ssa
-          shutil.copyfile(ssa, artifacts / "crash.ssa")
+          for name, source, line in (
+              ("crash", "examples/crash.v", 7),
+              ("deferred_validation", "examples/crashes/deferred_validation.v", 9),
+          ):
+              crash = json.loads((artifacts / f"{name}.json").read_text())
+              assert crash["kind"] == "crash" and "SIGABRT" in crash["reason"], crash
+              assert crash["location"]["file"].endswith("/" + source), crash
+              assert crash["location"]["line"] == line, crash
+              assert crash["location"]["ssa_opcode"] == "call", crash
+              if name == "deferred_validation":
+                  assert crash["outcome"]["stdout"] == "Finished reading the batch.\n", crash
+              ssa = Path(crash["ssa_file"])
+              assert ">>>" in ssa.read_text(), ssa
+              shutil.copyfile(ssa, artifacts / f"{name}.ssa")
 
           memory = json.loads((artifacts / "memory.json").read_text())
           assert memory["kind"] == "exited" and memory["outcome"]["exit_code"] == 0, memory

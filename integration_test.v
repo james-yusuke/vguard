@@ -66,7 +66,7 @@ fn main() {
 	assert first.value == 'false'
 }
 
-fn test_companion_compiler_resolves_a_wasmtime_trap() {
+fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 	compiler := os.getenv('VGUARD_TEST_COMPILER')
 	if compiler == '' {
 		return
@@ -76,37 +76,50 @@ fn test_companion_compiler_resolves_a_wasmtime_trap() {
 	defer {
 		os.rmdir_all(dir) or {}
 	}
-	source := os.join_path(dir, 'trap.v')
-	os.write_file(source, '@[noinline]
-fn calculate(n int) int {
-	return 100 / n
+	for example in [
+		WasmCrashExample{
+			name:     'rounded_divisor'
+			reason:   'integer divide by zero'
+			function: 'credits_per_batch'
+			line:     6
+		},
+		WasmCrashExample{
+			name:     'division_overflow'
+			reason:   'integer overflow'
+			function: 'account_units'
+			line:     5
+		},
+	] {
+		source := os.real_path(os.join_path(@VMODROOT, 'examples', 'crashes', example.name + '.v'))
+		manifest := build(BuildOptions{
+			source:   source
+			compiler: os.real_path(compiler)
+			backend:  'wasm'
+			target:   'wasm32_emscripten/wasm32'
+		}, os.join_path(dir, example.name), false) or { panic(err) }
+		bundle := open_bundle(manifest) or { panic(err) }
+		diagnosis := bundle.run(ExecutionCase{}) or { panic(err) }
+		assert diagnosis.kind == 'crash'
+		assert diagnosis.reason.contains(example.reason)
+		location := diagnosis.location or { panic(diagnosis.location_error) }
+		assert location.file == source
+		assert location.line == example.line
+		assert location.function == example.function
+		assert location.ssa_opcode == 'sdiv'
+		assert location.precision == 'source_span'
+		assert diagnosis.ssa_error == ''
+		assert os.dir(os.dir(diagnosis.ssa_file)) == os.join_path(os.dir(manifest), 'diagnostics')
+		ssa_report := os.read_file(diagnosis.ssa_file) or { panic(err) }
+		assert ssa_report.contains('fn "${example.function}"(')
+		assert ssa_report.contains('>>> SSA instruction mapped from the crash')
+		assert ssa_report.contains('  %${location.ssa_value} = sdiv ')
+		assert !ssa_report.contains('fn "main"(')
+	}
 }
 
-fn main() {
-	println(calculate(0))
-}
-') or {
-		panic(err)
-	}
-	manifest := build(BuildOptions{
-		source:   os.real_path(source)
-		compiler: os.real_path(compiler)
-		backend:  'wasm'
-		target:   'wasm32_emscripten/wasm32'
-	}, os.join_path(dir, 'target'), false) or { panic(err) }
-	bundle := open_bundle(manifest) or { panic(err) }
-	diagnosis := bundle.run(ExecutionCase{}) or { panic(err) }
-	assert diagnosis.kind == 'crash'
-	assert diagnosis.reason.contains('integer divide by zero')
-	location := diagnosis.location or { panic(diagnosis.location_error) }
-	assert location.file == os.real_path(source)
-	assert location.line == 3
-	assert location.ssa_opcode == 'sdiv'
-	assert diagnosis.ssa_error == ''
-	assert os.dir(os.dir(diagnosis.ssa_file)) == os.join_path(os.dir(manifest), 'diagnostics')
-	ssa_report := os.read_file(diagnosis.ssa_file) or { panic(err) }
-	assert ssa_report.contains('fn "calculate"(')
-	assert ssa_report.contains('>>> SSA instruction mapped from the crash')
-	assert ssa_report.contains('  %${location.ssa_value} = sdiv ')
-	assert !ssa_report.contains('fn "main"(')
+struct WasmCrashExample {
+	name     string
+	reason   string
+	function string
+	line     int
 }
