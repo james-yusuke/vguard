@@ -9,12 +9,12 @@ and WebAssembly builds, it also reports the SSA value ID and opcode.
 
 ### Build VGuard
 
-From the repository root, invoke `~/dev/v/v` directly to build VGuard with that checkout's
-`vlib`. Use `.` as the compilation target because VGuard spans multiple `.v` files.
+With `v` on your `PATH`, run these commands from the repository root. Use `.` as the
+compilation target because VGuard spans multiple `.v` files.
 
 ```sh
-"$HOME/dev/v/v" run . --help
-"$HOME/dev/v/v" -o vguard .
+v run . --help
+v -o vguard .
 ```
 
 ### Build the target compiler
@@ -39,8 +39,8 @@ The WebAssembly reference build uses Emscripten's `emcc`. Pass
 ## Usage
 
 Run VGuard without arguments to list the commands. Pass a V file or directory to `build`, then
-pass the generated `build.json` to `run` or `compare`. You can use `"$HOME/dev/v/v" run .`
-in place of `./vguard`.
+pass the generated `build.json` to `run` or `compare`. You can use `v run .` in place
+of `./vguard`.
 
 Try the [crash detection and memory check examples](examples/README.md).
 
@@ -138,7 +138,7 @@ detection. Use-after-free detection also depends on the allocator's quarantine a
   divergence. The original output difference stays in the report if rebuilding or reproducing it
   fails due to types, control flow, or external I/O.
 
-Run `"$HOME/dev/v/v" test .` to check source map validation, address boundaries, debugger output
+Run `v test .` to check source map validation, address boundaries, debugger output
 parsing, and trace comparisons. Set `VGUARD_TEST_COMPILER=../v/v` to also run integration tests
 with the rebuilt compiler. If `wasmtime` is on `PATH`, the integration tests also cover
 WebAssembly traps.

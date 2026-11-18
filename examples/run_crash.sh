@@ -2,7 +2,7 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-host_v=${VGUARD_HOST_V:-"$HOME/dev/v/v"}
+host_v=${VGUARD_HOST_V:-v}
 default_target_v="$repo_root/../v/v"
 if [ -x "$repo_root/../v/v-vguard" ]; then
 	default_target_v="$repo_root/../v/v-vguard"

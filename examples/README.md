@@ -6,8 +6,9 @@ English · [日本語](README-JA.md)
 
 [`crash.v`](crash.v) deliberately stops with `SIGABRT` by calling `C.abort()` from `crash_here()`.
 
-The script builds VGuard with `~/dev/v/v` by default. It compiles the example with the patched
-`../v/v-vguard` if available, or with the rebuilt `../v/v` otherwise.
+The script builds VGuard with `v` from `PATH`. Set `VGUARD_HOST_V` to use a specific compiler.
+It compiles the example with the patched `../v/v-vguard` if available, or with the rebuilt
+`../v/v` otherwise.
 See [how to build the target compiler](../README.md#build-the-target-compiler).
 
 ```sh
