@@ -8,7 +8,7 @@ const invalid_command = 'expected a command and input path. See vguard --help'
 const usage = 'VGuard traces V binary failures to their source.
 
   vguard build <file-or-directory> --v <compiler> --backend <backend> --target <os/arch>
-               --out <new-directory> [--prod] [--object | --hot-fn <symbol>] [--v-arg <arg>]...
+               --out <new-directory> [--prod] [--memory] [--object | --hot-fn <symbol>] [--v-arg <arg>]...
   vguard resolve <build.json> (--address <va> | --pc <pc> --load-base <base> |
                 --offset <bytes> [--section <number>]) [--json]
   vguard run <build.json> [--case <case.json>] [--json]
@@ -27,7 +27,7 @@ fn parse_options(command string, args []string) !Arguments {
 		'resolve' { ['--address', '--pc', '--load-base', '--offset', '--section'] }
 		else { ['--case'] }
 	}
-	boolean := if command == 'build' { ['--prod', '--object'] } else { ['--json'] }
+	boolean := if command == 'build' { ['--prod', '--object', '--memory'] } else { ['--json'] }
 	mut values := map[string]string{}
 	mut switches := map[string]bool{}
 	mut v_args := []string{}
@@ -163,6 +163,7 @@ fn cli(argv []string) !int {
 			target:   opts.require('--target')!
 			args:     opts.v_args
 			prod:     opts.switches['--prod']
+			memory:   opts.switches['--memory']
 			object:   opts.switches['--object']
 			hot_fn:   opts.values['--hot-fn']
 		}
@@ -188,8 +189,10 @@ fn cli(argv []string) !int {
 			print(report.outcome.stdout)
 			eprint(report.outcome.stderr)
 			println('VGuard: ${report.kind} ${report.reason}'.trim_space())
-			if loc := report.location {
-				println(location_text(loc))
+			if report.memory_errors.len == 0 {
+				if loc := report.location {
+					println(location_text(loc))
+				}
 			}
 			if report.location_error != '' {
 				println(report.location_error)
@@ -200,9 +203,12 @@ fn cli(argv []string) !int {
 			if report.ssa_error != '' {
 				println('SSA report unavailable: ${report.ssa_error}')
 			}
+			for i, finding in report.memory_errors {
+				print_memory_violation(finding, i > 0)
+			}
 		}
 		return match report.kind {
-			'crash' { 1 }
+			'crash', 'memory_error' { 1 }
 			'exited' {
 				if report.outcome.exit_code == 0 { 0 } else { 1 }
 			}

@@ -72,6 +72,40 @@ Vの通常のビルド依存関係に加え、`run` はLinuxでGDB、macOS・Win
 
 amd64・arm64・Wasmの直接生成では、クラッシュに対応するSSAが見つかると、`run` がビルドフォルダ内の `diagnostics/crash-…/crash.ssa` に該当関数と命令を書き出します。JSONの `ssa_file` に保存先、SSAの読み込みや保存に失敗した場合は `ssa_error` に理由が入ります。SSAの保存に対応するVコンパイラで対象をビルドしてください。
 
+## メモリ安全性の検査
+
+Cバックエンドで `--memory` を付けて実行形式をビルドし、既存のJSONケースを `run` に渡します。
+macOS/arm64ではリポジトリのルートから次のように実行します。
+
+```sh
+./vguard build ./app --v ../v/v-vguard --backend c --target macos/arm64 --memory --out ./guard-memory
+./vguard run ./guard-memory/build.json --case ./case.json --json
+```
+
+通常のデバッガー経路は停止を観測するため、実行を継続できる不正アクセスは捕捉できません。
+メモリ検査ではClangのAddressSanitizerがヒープ・スタック・グローバル領域の境界違反、
+ヒープ解放後アクセス、二重解放、不正解放を検査します。UndefinedBehaviorSanitizerはnull参照と、
+Clangが境界を把握できる配列への範囲外アクセスを検査します。VGuardはサニタイザーの報告を
+終了状態と独立に読み取るため、CPU例外が起きる前の違反も報告できます。
+[AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) ·
+[UndefinedBehaviorSanitizer](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)
+
+検出時の終了コードは 1、JSONの `kind` は `memory_error` です。`memory_errors` には種別と、
+取得できたアドレス・操作・アクセス幅・Vソース位置が入ります。サニタイザーに確保・解放時の
+スタックがあり、Vのフレームを解決できた場合は、その位置も報告します。ASanの境界違反は
+読み取りと書き込みを区別します。UBSanの配列境界報告では操作とアドレスを取得できない場合があります。
+
+`--memory` はClangと `-gc none` を選びます。対応対象はLinux/amd64、Linux/arm64、
+macOS/arm64で、ホストとターゲットの一致およびClangのサニタイザーランタイムが必要です。
+ソース位置の逆引きには `llvm-symbolizer`、Linuxの `addr2line`、macOSの `atos` を使います。
+メモリ診断の位置はCバックエンドのデバッグ情報に基づくため、SSA命令IDは取得できません。
+通常のネイティブおよびWasmのクラッシュ診断では、引き続きSSAを逆引きできます。
+メモリ検査の未対応対象はFastC、直接ネイティブおよびWasm生成、Windows、共有ライブラリのハーネスです。
+
+検査範囲はケースが実際に実行した経路に限られます。インラインアセンブリ、未計測のライブラリ、
+ASanと連携しない独自アロケータ、同じ有効な確保領域内の境界違反は見逃す場合があります。
+解放後アクセスの検出は、解放領域の隔離と再利用にも依存します。
+
 ## 診断の範囲
 
 - ELFの直接生成はLinux/amd64とLinux/arm64、Mach-Oの直接生成はmacOS/arm64を対象とします。オブジェクトは `--object`、arm64生コードは `--hot-fn <symbol>` で生成します。

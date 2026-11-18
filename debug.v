@@ -11,6 +11,7 @@ struct Diagnosis {
 	location_error string
 	ssa_file       string
 	ssa_error      string
+	memory_errors  []MemoryViolation @[omitempty]
 	outcome        Outcome
 }
 
@@ -41,6 +42,9 @@ fn read_output(path string) !string {
 fn (bundle &Bundle) run(scenario ExecutionCase) !Diagnosis {
 	if bundle.image.relocatable || (!bundle.image.runnable && scenario.harness == '') {
 		return error('use resolve for object or raw code, or specify a harness for a shared library')
+	}
+	if bundle.manifest.options.memory {
+		return bundle.run_memory(scenario)
 	}
 	report := if bundle.image.format == 'wasm' {
 		outcome := bundle.run_wasm(scenario)!

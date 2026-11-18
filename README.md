@@ -88,6 +88,41 @@ crash-related SSA instruction in `diagnostics/crash-…/crash.ssa` inside the bu
 The JSON report includes the path in `ssa_file` or a read or write error in `ssa_error`.
 Build the target with a V compiler that supports SSA snapshots.
 
+## Memory safety checks
+
+Build a standalone executable with the C backend and `--memory`, then run it with the
+same JSON case format. On macOS/arm64, for example, use these commands from the repository root.
+
+```sh
+./vguard build ./app --v ../v/v-vguard --backend c --target macos/arm64 --memory --out ./guard-memory
+./vguard run ./guard-memory/build.json --case ./case.json --json
+```
+
+The normal debugger path observes stops and cannot see an invalid access that leaves the process
+running. A memory build uses Clang AddressSanitizer for checks on heap, stack, and global accesses,
+heap use-after-free, double free, and invalid free. Clang UndefinedBehaviorSanitizer checks
+null dereferences and array bounds that Clang can determine. VGuard reads sanitizer diagnostics
+independently of the process exit status. The checks can report a violation before a CPU fault.
+[AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) ·
+[UndefinedBehaviorSanitizer](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)
+
+`run` returns exit code 1 and `kind: "memory_error"` when it finds a supported violation.
+The `memory_errors` entries include the kind, address, operation, size, and V source location
+when available. Allocation and deallocation locations are included when the sanitizer supplies
+those stacks and their V frames can be resolved. ASan overflow reports distinguish reads and
+writes. UBSan array bounds reports can omit the operation and address.
+
+`--memory` selects Clang and `-gc none`. It supports Linux/amd64, Linux/arm64, and macOS/arm64
+with a matching host, Clang, and its sanitizer runtimes. Source lookup uses `llvm-symbolizer`,
+`addr2line` on Linux, or `atos` on macOS. Memory reports use C backend debug information, so SSA
+IDs are unavailable in this mode. The ordinary native and WebAssembly crash paths still provide
+SSA lookup. FastC, direct native and WebAssembly builds, Windows, and shared-library harnesses
+are outside the memory mode's coverage.
+
+Coverage depends on the paths exercised by the case. Assembly, uninstrumented libraries, custom
+allocators without ASan support, and accesses that remain inside a valid allocation can escape
+detection. Use-after-free detection also depends on the allocator's quarantine and reuse.
+
 ## Diagnostic coverage
 
 - Direct ELF generation covers Linux/amd64 and Linux/arm64. Direct Mach-O generation covers

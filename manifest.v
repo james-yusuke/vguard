@@ -38,6 +38,7 @@ struct BuildOptions {
 	target   string
 	args     []string
 	prod     bool
+	memory   bool @[omitempty]
 	object   bool
 	hot_fn   string
 }
@@ -143,6 +144,7 @@ fn build(options BuildOptions, out string, trace bool) !string {
 	if options.backend !in ['c', 'fastc', 'amd64', 'arm64', 'wasm'] {
 		return error('invalid V backend: ${options.backend}')
 	}
+	memory_args := if options.memory { memory_compiler_args(options)! } else { []string{} }
 	source_sha256 := source_digest(options.source, out)!
 	compiler_sha256 := digest(os.read_bytes(options.compiler)!)
 	os.mkdir(out)!
@@ -170,6 +172,7 @@ fn build(options BuildOptions, out string, trace bool) !string {
 		args << ['-hot-fn', options.hot_fn]
 	}
 	args << options.args
+	args << memory_args
 	args << options.source
 	result := capture(Command{
 		executable: options.compiler
