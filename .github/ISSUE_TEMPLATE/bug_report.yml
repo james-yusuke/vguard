@@ -1,0 +1,34 @@
+name: Bug report
+description: Report an unexpected result from VGuard.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      placeholder: I expected the crash report to include a V source line. The location was empty.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the build and run commands and the case file if relevant.
+      placeholder: sh examples/run_crash.sh --json
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the OS and architecture, backend, VGuard revision, and V compiler revision.
+      placeholder: macOS/arm64, arm64 backend, VGuard abc1234, V 3230454
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Diagnostic output
+      description: Paste the relevant JSON, terminal output, or SSA excerpt. Remove private data.
+      render: text

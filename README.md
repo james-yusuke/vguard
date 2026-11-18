@@ -42,7 +42,7 @@ Run VGuard without arguments to list the commands. Pass a V file or directory to
 pass the generated `build.json` to `run` or `compare`. You can use `"$HOME/dev/v/v" run .`
 in place of `./vguard`.
 
-Run `sh examples/run_crash.sh` to try the [crash detection example](examples/README.md).
+Try the [crash detection and memory check examples](examples/README.md).
 
 On Apple Silicon, for example, run these commands from the repository root.
 
@@ -142,3 +142,17 @@ Run `"$HOME/dev/v/v" test .` to check source map validation, address boundaries,
 parsing, and trace comparisons. Set `VGUARD_TEST_COMPILER=../v/v` to also run integration tests
 with the rebuilt compiler. If `wasmtime` is on `PATH`, the integration tests also cover
 WebAssembly traps.
+
+## GitHub contribution and CI
+
+Use the issue forms for a [bug report](.github/ISSUE_TEMPLATE/bug_report.yml) or
+[feature request](.github/ISSUE_TEMPLATE/feature_request.yml).
+The [Pull Request template](.github/PULL_REQUEST_TEMPLATE.md) provides space for the change,
+checks, and an example.
+
+The [CI workflow](.github/workflows/ci.yml) runs on Pull Requests and pushes to `main`, and can
+also be started from the Actions tab. On Linux/amd64, Linux/arm64, and macOS/arm64, it checks
+formatting, runs unit and integration tests, and validates the crash and memory check examples.
+Successful jobs upload the VGuard binary archive, JSON reports, and the crash SSA.
+
+In a Pull Request, open **Checks** or run `gh pr checks --watch` to follow its jobs.

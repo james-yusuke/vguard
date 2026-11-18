@@ -1,6 +1,8 @@
-# Try crash detection
+# VGuard examples
 
 English · [日本語](README-JA.md)
+
+## Crash detection
 
 [`crash.v`](crash.v) deliberately stops with `SIGABRT` by calling `C.abort()` from `crash_here()`.
 
@@ -36,3 +38,20 @@ The script supports macOS/arm64 with LLDB, and Linux/amd64 and Linux/arm64 with 
 4. VGuard writes the SSA for `crash_here` to `diagnostics/crash-…/crash.ssa` next to `build.json`.
    The line immediately above the mapped instruction contains `>>>`. Find the full path under
    `SSA report` in the terminal or `ssa_file` in JSON.
+
+## Memory check
+
+[`memory_scan/main.v`](memory_scan/main.v) is a normal execution case for `--memory`.
+The [case file](memory_scan/case.json) passes a label as an argument and a message on stdin.
+Run these commands from the repository root on macOS/arm64 after building VGuard and its
+[target compiler](../README.md#build-the-target-compiler).
+
+```sh
+work=$(mktemp -d)
+./vguard build examples/memory_scan --v ../v/v-vguard --backend c --target macos/arm64 --memory --out "$work/build"
+./vguard run "$work/build/build.json" --case examples/memory_scan/case.json --json
+```
+
+Use `linux/amd64` or `linux/arm64` on a matching Linux host. Expect exit code 0, report kind
+`exited`, and target stdout `sample: VGuard`. The CI workflow also runs this example and
+uploads its JSON report.

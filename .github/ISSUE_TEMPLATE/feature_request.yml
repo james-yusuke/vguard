@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a change to the CLI, diagnostics, or supported targets.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Describe the task and where the current workflow falls short.
+      placeholder: I want to review VGuard diagnostics in my project's Pull Request checks.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Show an example command or output if that helps explain the change.
+      placeholder: Upload the JSON diagnosis and SSA report with the check result.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Targets and backends
+      placeholder: Linux/amd64 and macOS/arm64, C backend

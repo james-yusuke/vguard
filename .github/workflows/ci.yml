@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+            target: linux/amd64
+            backend: amd64
+            wasmtime: x86_64-linux
+            wasmtime_sha256: 5db0ca8e838ab95a51ba9acdf11f42888bcd0092dda45a86129ae540c4fa952c
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: linux/arm64
+            backend: arm64
+            wasmtime: aarch64-linux
+            wasmtime_sha256: c3665e79d97a8d42484f3d0320c2911441ca87c58daab3f360ff1cf8770b9960
+          - platform: macos-arm64
+            runner: macos-15
+            target: macos/arm64
+            backend: arm64
+            wasmtime: aarch64-macos
+            wasmtime_sha256: 42b066764fb5ccd92f4378375202627b457be8ef0e85806784304ce9b07a721a
+    defaults:
+      run:
+        shell: bash
+        working-directory: vguard
+    env:
+      V_MACOS_V3_NO_FALLBACK: "1"
+    steps:
+      - name: Check out VGuard
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: vguard
+          persist-credentials: false
+
+      - name: Check out the host V compiler
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vlang/v
+          ref: ba41fa121b738a1a694e0050401a45d2376e09b9
+          path: host-v
+          persist-credentials: false
+
+      - name: Check out the V bootstrap snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vlang/vc
+          ref: 06e7354cfcbfe73b75c2e430e98ee3eb8d09462d
+          path: host-v/vc
+          persist-credentials: false
+
+      - name: Check out the target V compiler
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: james-yusuke/v
+          ref: 323045464d07c3f6e426f994cfbfe6cfb365ae84
+          path: target-v
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-rt-dev gdb binutils
+
+      - name: Install Wasmtime
+        env:
+          WASMTIME_PLATFORM: ${{ matrix.wasmtime }}
+          WASMTIME_SHA256: ${{ matrix.wasmtime_sha256 }}
+        run: |
+          version=v50.0.2
+          name="wasmtime-$version-$WASMTIME_PLATFORM"
+          archive="$RUNNER_TEMP/$name.tar.xz"
+          url="https://github.com/bytecodealliance/wasmtime/releases/download/$version/$name.tar.xz"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" "$url"
+          printf '%s  %s\n' "$WASMTIME_SHA256" "$archive" | shasum -a 256 -c -
+          tar -xf "$archive" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/$name/wasmtime" --version
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      - name: Build the host and patched target compilers
+        env:
+          VGUARD_BACKEND: ${{ matrix.backend }}
+        run: |
+          make -C ../host-v local=1 CC=clang VFLAGS='-cc clang -gc none'
+          git -C ../target-v apply --check "$PWD/compiler/vguard.patch"
+          git -C ../target-v apply "$PWD/compiler/vguard.patch"
+          (
+            cd ../target-v
+            ../host-v/v -compile-backend "$VGUARD_BACKEND,wasm" -cc clang -gc none \
+              -prealloc -nocache -o ./v-vguard cmd/v
+          )
+
+      - name: Check formatting and run tests
+        env:
+          VFLAGS: "-cc clang -gc none"
+          VGUARD_TEST_COMPILER: ${{ github.workspace }}/target-v/v-vguard
+        run: |
+          ../host-v/v fmt -verify ./*.v examples/crash.v examples/memory_scan/main.v
+          sh -n examples/run_crash.sh
+          ../host-v/v test .
+
+      - name: Build VGuard and check the examples
+        env:
+          VGUARD_TARGET: ${{ matrix.target }}
+          VGUARD_BACKEND: ${{ matrix.backend }}
+        run: |
+          work="$RUNNER_TEMP/vguard-checks"
+          mkdir -p "$work/artifacts"
+          ../host-v/v -cc clang -gc none -o "$work/vguard" .
+          "$work/vguard" --help
+          target_v="$GITHUB_WORKSPACE/target-v/v-vguard"
+
+          "$work/vguard" build examples/crash.v --v "$target_v" --target "$VGUARD_TARGET" \
+            --backend "$VGUARD_BACKEND" --out "$work/crash-build" --v-arg -gc --v-arg none
+          status=0
+          "$work/vguard" run "$work/crash-build/build.json" --json > "$work/artifacts/crash.json" || status=$?
+          cat "$work/artifacts/crash.json"
+          test "$status" -eq 1
+
+          "$work/vguard" build examples/memory_scan --v "$target_v" --target "$VGUARD_TARGET" \
+            --backend c --memory --out "$work/memory-build"
+          "$work/vguard" run "$work/memory-build/build.json" --case examples/memory_scan/case.json \
+            --json > "$work/artifacts/memory.json"
+          cat "$work/artifacts/memory.json"
+
+          python3 - "$work/artifacts" <<'PY'
+          import json
+          import shutil
+          import sys
+          from pathlib import Path
+
+          artifacts = Path(sys.argv[1])
+          crash = json.loads((artifacts / "crash.json").read_text())
+          assert crash["kind"] == "crash" and "SIGABRT" in crash["reason"], crash
+          assert crash["location"]["file"].endswith("/examples/crash.v"), crash
+          assert crash["location"]["ssa_opcode"] == "call", crash
+          ssa = Path(crash["ssa_file"])
+          assert ">>>" in ssa.read_text(), ssa
+          shutil.copyfile(ssa, artifacts / "crash.ssa")
+
+          memory = json.loads((artifacts / "memory.json").read_text())
+          assert memory["kind"] == "exited" and memory["outcome"]["exit_code"] == 0, memory
+          assert memory["outcome"]["stdout"] == "sample: VGuard\n", memory
+          assert not memory.get("memory_errors"), memory
+          PY
+
+          tar -czf "$work/artifacts/vguard.tar.gz" -C "$work" vguard
+
+      - name: Upload the binary and example reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vguard-${{ matrix.platform }}
+          path: ${{ runner.temp }}/vguard-checks/artifacts/
+          if-no-files-found: error

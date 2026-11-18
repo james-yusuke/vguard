@@ -1,0 +1,6 @@
+{
+  "argv": ["sample"],
+  "stdin": "VGuard\n",
+  "cwd": ".",
+  "timeout_ms": 30000
+}

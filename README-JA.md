@@ -33,7 +33,7 @@ Vの通常のビルド依存関係に加え、`run` はLinuxでGDB、macOS・Win
 
 引数なしで起動すると、コマンド一覧を表示します。まず `build` に診断するVファイルまたはディレクトリを指定し、生成された `build.json` を `run` や `compare` に渡します。`./vguard` の箇所は `"$HOME/dev/v/v" run .` でも実行できます。
 
-クラッシュの検知を試すには `sh examples/run_crash.sh` を実行してください。[クラッシュ検知サンプル](examples/README-JA.md)
+[クラッシュ検知とメモリ検査の実行例](examples/README-JA.md)を試せます。
 
 たとえばApple Siliconでは次のように実行します。
 
@@ -114,3 +114,16 @@ ASanと連携しない独自アロケータ、同じ有効な確保領域内の�
 - `compare` はまずトレースなしの結果を比較し、差が出た場合にトレースを付けて再実行します。スカラーの代入・条件・戻り値が対象です。FastCでは真偽の条件と整数・真偽値のリテラルを計測します。トレースで見つかる位置は、比較した実行で最初に観測された差です。型・制御フロー・外部I/Oへの依存により再ビルドや再現に失敗した場合でも、観測済みの出力差分は保持します。
 
 `"$HOME/dev/v/v" test .` で、対応表の照合、アドレス境界、デバッガー出力の解釈、トレース差分を検証できます。`VGUARD_TEST_COMPILER=../v/v` を付けると、再ビルド済みの対応版コンパイラによる結合テストも実行します。`wasmtime` が `PATH` にある場合はWasmのトラップも検証します。
+
+## GitHubでの開発とCI
+
+Issueには[バグ報告フォーム](.github/ISSUE_TEMPLATE/bug_report.yml)と
+[機能提案フォーム](.github/ISSUE_TEMPLATE/feature_request.yml)を用意しています。
+[Pull Requestテンプレート](.github/PULL_REQUEST_TEMPLATE.md)には変更内容、確認手順、実行例を記載できます。
+
+[CIワークフロー](.github/workflows/ci.yml)はPull Requestと `main` へのpushで動き、Actionsタブから手動でも
+起動できます。Linux/amd64、Linux/arm64、macOS/arm64で整形チェック、単体・結合テスト、
+クラッシュ検知とメモリ検査のサンプルを実行します。成功したジョブからバイナリのアーカイブ、
+JSONレポート、クラッシュ位置のSSAをダウンロードできます。
+
+Pull Requestの **Checks** タブか `gh pr checks --watch` で進捗を確認できます。
