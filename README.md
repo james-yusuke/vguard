@@ -102,10 +102,40 @@ is available. The `^` marker points to the reported column, or `>` marks the lin
 a line number is known. Use `--json` for machine-readable output. Exit code 0 indicates
 success, 1 indicates a crash or a difference, and 2 indicates a tool error or an inconclusive result.
 
-For direct amd64, arm64, and WebAssembly builds, `run` saves the mapped function and marks the
-crash-related SSA instruction in `diagnostics/crash-…/crash.ssa` inside the build directory.
-The JSON report includes the path in `ssa_file` or a read or write error in `ssa_error`.
-Build the target with a V compiler that supports SSA snapshots.
+For direct amd64, arm64, and WebAssembly builds, `run` prints the mapped SSA function twice.
+The annotated copy adds `<<<` to the instruction mapped to the stop. If the debugger found
+a V caller frame, the annotation identifies that frame. `run` also saves the pair in
+`diagnostics/crash-…/` inside the build directory.
+
+| File | JSON field |
+|---|---|
+| `original.ssa` | `ssa_original_file` |
+| `crash.ssa` with the inline annotation and crash details | `ssa_file` |
+
+Build the target with a V compiler that supports SSA snapshots. The JSON report includes
+an SSA read or write error in `ssa_error` when one occurs.
+
+### Trace native compilation
+
+Add `--trace-build` to a direct `amd64` or `arm64` build. For example, on Apple Silicon,
+run this command from the repository root with the patched target compiler.
+
+```sh
+./vguard build examples/crash.v --v ../v/v --backend arm64 --target macos/arm64 \
+  --trace-build --out ./trace-build --v-arg -gc --v-arg none
+```
+
+VGuard forwards compiler output to standard error during the build. The output directory
+contains these files, including when the compiler fails.
+
+| File | Contents |
+|---|---|
+| `compile-trace.json` | Original stage labels, durations, RSS, and elapsed compiler time |
+| `compiler.stdout.log`, `compiler.stderr.log` | The compiler's captured output streams |
+
+The JSON follows the order in which V reported the stages with `-show-timings`.
+Parallel work can make stage durations overlap. A successful VGuard build also writes
+`build.json` for `run`, `resolve`, and `compare`.
 
 ## Memory safety checks
 

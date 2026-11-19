@@ -17,12 +17,13 @@ struct ExecutionCase {
 }
 
 struct Command {
-	executable string
-	args       []string
-	cwd        string
-	env        map[string]string
-	stdin_path string
-	timeout_ms int = 30000
+	executable        string
+	args              []string
+	cwd               string
+	env               map[string]string
+	stdin_path        string
+	timeout_ms        int = 30000
+	forward_to_stderr bool
 }
 
 struct Outcome {
@@ -88,11 +89,17 @@ fn capture(cmd Command) !Outcome {
 			if p.is_pending(.stdout) {
 				chunk := p.stdout_read()
 				out.write_string(chunk)
+				if cmd.forward_to_stderr {
+					eprint(chunk)
+				}
 				read_chunk = read_chunk || chunk.len > 0
 			}
 			if p.is_pending(.stderr) {
 				chunk := p.stderr_read()
 				err.write_string(chunk)
+				if cmd.forward_to_stderr {
+					eprint(chunk)
+				}
 				read_chunk = read_chunk || chunk.len > 0
 			}
 			if !read_chunk || out.len + err.len > capture_limit {

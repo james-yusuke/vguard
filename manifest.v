@@ -3,6 +3,7 @@ module main
 import crypto.sha256
 import json2
 import os
+import time
 
 const map_version = 1
 
@@ -136,7 +137,12 @@ fn artifact_name(options BuildOptions) string {
 	}
 }
 
-fn build(options BuildOptions, out string, trace bool) !string {
+@[params]
+struct BuildOutput {
+	trace_build bool
+}
+
+fn build(options BuildOptions, out string, trace bool, output BuildOutput) !string {
 	target := options.target.split('/')
 	if target.len != 2 || target[0] == '' || target[1] !in ['amd64', 'arm64', 'wasm32'] {
 		return error('--target expects OS/amd64, OS/arm64 or wasm32_emscripten/wasm32')
@@ -144,13 +150,17 @@ fn build(options BuildOptions, out string, trace bool) !string {
 	if options.backend !in ['c', 'fastc', 'amd64', 'arm64', 'wasm'] {
 		return error('invalid V backend: ${options.backend}')
 	}
+	if output.trace_build && options.backend !in ['amd64', 'arm64'] {
+		return error('--trace-build requires the amd64 or arm64 native backend')
+	}
 	memory_args := if options.memory { memory_compiler_args(options)! } else { []string{} }
 	source_sha256 := source_digest(options.source, out)!
 	compiler_sha256 := digest(os.read_bytes(options.compiler)!)
 	os.mkdir(out)!
 	mut completed := false
+	mut trace_saved := false
 	defer {
-		if !completed {
+		if !completed && !trace_saved {
 			os.rmdir_all(out) or {}
 		}
 	}
@@ -173,16 +183,39 @@ fn build(options BuildOptions, out string, trace bool) !string {
 	}
 	args << options.args
 	args << memory_args
+	if output.trace_build {
+		args << '-show-timings'
+		eprintln('VGuard: tracing ${options.backend} compilation for ${options.target}')
+	}
 	args << options.source
+	elapsed := time.new_stopwatch()
 	result := capture(Command{
-		executable: options.compiler
-		args:       args
-		timeout_ms: 300000
-	})!
+		executable:        options.compiler
+		args:              args
+		timeout_ms:        300000
+		forward_to_stderr: output.trace_build
+	}) or {
+		if !output.trace_build {
+			return err
+		}
+		eprintln(err.msg())
+		Outcome{
+			exit_code: -1
+			status:    'start_error'
+			stderr:    err.msg() + '\n'
+		}
+	}
+	if output.trace_build {
+		save_compile_trace(options, out, result, elapsed.elapsed().milliseconds())!
+		trace_saved = true
+	}
 	if result.status != 'exited' || result.exit_code != 0 {
 		details := result.stdout + result.stderr
 		if result.status == 'exited' && result.exit_code == 2 && details.contains(invalid_command) {
 			return error('--v points to the VGuard executable (${options.compiler}). Pass the V compiler that supports -vguard-map.')
+		}
+		if output.trace_build {
+			return error('V build failed (${result.status}, ${result.exit_code}). Compiler logs are in ${out}.')
 		}
 		return error('V build failed (${result.status}, ${result.exit_code})\n${details}')
 	}
@@ -197,7 +230,10 @@ fn build(options BuildOptions, out string, trace bool) !string {
 		compiler_sha256: compiler_sha256
 	}
 	read_bundle(manifest, out)!
-	os.write_file(manifest_path, json2.encode(manifest, prettify: true) + '\n')!
+	os.write_file(manifest_path, json2.encode(manifest, prettify: true) + '\n') or {
+		os.rm(manifest_path) or {}
+		return err
+	}
 	completed = true
 	return manifest_path
 }

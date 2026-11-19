@@ -8,7 +8,8 @@ const invalid_command = 'expected a command and input path. See vguard --help'
 const usage = 'VGuard traces V binary failures to their source.
 
   vguard build <file-or-directory> --v <compiler> --backend <backend> --target <os/arch>
-               --out <new-directory> [--prod] [--memory] [--object | --hot-fn <symbol>] [--v-arg <arg>]...
+               --out <new-directory> [--prod] [--trace-build] [--memory]
+               [--object | --hot-fn <symbol>] [--v-arg <arg>]...
   vguard resolve <build.json> (--address <va> | --pc <pc> --load-base <base> |
                 --offset <bytes> [--section <number>]) [--json]
   vguard run <build.json> [--case <case.json>] [--json]
@@ -27,7 +28,11 @@ fn parse_options(command string, args []string) !Arguments {
 		'resolve' { ['--address', '--pc', '--load-base', '--offset', '--section'] }
 		else { ['--case'] }
 	}
-	boolean := if command == 'build' { ['--prod', '--object', '--memory'] } else { ['--json'] }
+	boolean := if command == 'build' {
+		['--prod', '--object', '--memory', '--trace-build']
+	} else {
+		['--json']
+	}
 	mut values := map[string]string{}
 	mut switches := map[string]bool{}
 	mut v_args := []string{}
@@ -170,7 +175,9 @@ fn cli(argv []string) !int {
 		if options.hot_fn != '' && (options.object || options.backend != 'arm64') {
 			return error('--hot-fn requires the arm64 backend and a raw output artifact')
 		}
-		println(build(options, os.abs_path(opts.require('--out')!), false)!)
+		println(build(options, os.abs_path(opts.require('--out')!), false,
+			trace_build: opts.switches['--trace-build']
+		)!)
 		return 0
 	}
 	bundle := open_bundle(argv[1])!

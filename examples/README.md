@@ -77,8 +77,20 @@ The WebAssembly examples need `wasmtime` on `PATH`.
 ./vguard run "$work/division-overflow/build.json"
 ```
 
-Compare the source excerpt and `^` marker with your prediction. Add `--json` to `run` to get
-the same location and report path in `location` and `ssa_file`.
+Compare the source excerpt and `^` marker with your prediction. The terminal shows the same
+SSA function under `SSA (original)` and `SSA (annotated)`. In the rounded divisor example,
+the second `sdiv` gets the inline marker. The SSA value IDs can vary by build.
+
+```text
+SSA (original)
+  %5770 = sdiv t2 %5768, %5769
+
+SSA (annotated)
+  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here
+```
+
+`run` saves both copies in the same crash report directory. Add `--json` to get the
+source location in `location` and the file paths in `ssa_original_file` and `ssa_file`.
 
 <details>
 <summary>Expected stops and SSA instructions</summary>

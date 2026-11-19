@@ -89,7 +89,33 @@ Vの通常のビルド依存関係に加え、`run` はLinuxでGDB、macOS・Win
 列まで分かるときは `^`、行だけ分かるときは `>` で示します。機械処理には `--json` を使えます。
 終了コードは成功が0、クラッシュや出力差分が1、ツールエラーや診断不能が2です。
 
-amd64・arm64・Wasmの直接生成では、クラッシュに対応するSSAが見つかると、`run` がビルドフォルダ内の `diagnostics/crash-…/crash.ssa` に該当関数と命令を書き出します。JSONの `ssa_file` に保存先、SSAの読み込みや保存に失敗した場合は `ssa_error` に理由が入ります。SSAの保存に対応するVコンパイラで対象をビルドしてください。
+amd64・arm64・Wasmの直接生成では、クラッシュに対応するSSAが見つかると、`run` が該当関数の元のSSAと注釈付きSSAを順に表示します。注釈付きSSAでは、対応する命令行の末尾に `<<<` が付きます。デバッガーがVの呼び出し元フレームを特定した場合は、注釈にその旨が表示されます。2つのファイルはビルドフォルダ内の `diagnostics/crash-…/` に保存されます。
+
+| ファイル | JSONフィールド |
+|---|---|
+| 元の `original.ssa` | `ssa_original_file` |
+| クラッシュ情報と注釈が付いた `crash.ssa` | `ssa_file` |
+
+SSAの保存に対応するVコンパイラで対象をビルドしてください。SSAの読み込みや保存に失敗した場合は、JSONの `ssa_error` に理由が入ります。
+
+### ネイティブコンパイルの追跡
+
+`amd64` または `arm64` バックエンドで直接生成するときに `--trace-build` を付けます。
+Apple Siliconでは、リポジトリのルートからパッチ適用済みのVコンパイラを指定して実行します。
+
+```sh
+./vguard build examples/crash.v --v ../v/v --backend arm64 --target macos/arm64 \
+  --trace-build --out ./trace-build --v-arg -gc --v-arg none
+```
+
+ビルド中のコンパイラ出力は標準エラーに表示されます。コンパイルが失敗した場合も、`--out` のディレクトリに以下のファイルが残ります。
+
+| ファイル | 内容 |
+|---|---|
+| `compile-trace.json` | Vが報告した工程名、工程ごとの所要時間とメモリ使用量（RSS）、コンパイラの全体所要時間 |
+| `compiler.stdout.log`、`compiler.stderr.log` | コンパイラの標準出力と標準エラーの記録 |
+
+JSONには、Vが `-show-timings` で報告した順に工程を記録します。並列処理では工程ごとの計測時間が重なる場合があります。VGuardのビルドが成功すると `build.json` も生成され、`run`・`resolve`・`compare` に渡せます。
 
 ## メモリ安全性の検査
 
