@@ -6,6 +6,20 @@ VGuardは、Vが生成したバイナリの異常をVソースへ逆引きする
 
 ## セットアップ
 
+### VPMでインストール
+
+`v` と Git が `PATH` 上にある状態で、GitHubからVGuardのソースをインストールし、CLIをビルドします。
+
+```sh
+v install --git https://github.com/james-yusuke/vguard
+vguard_src="$(v env VMODULES)/vguard"
+v -o vguard "$vguard_src"
+./vguard --help
+```
+
+VPMが別のインストール先を表示した場合は、そのパスを `vguard_src` に指定します。
+`v run "$vguard_src" --help` で、インストール先から直接実行することもできます。
+
 ### VGuard本体
 
 リポジトリのルートで、`PATH` 上の `v` を使って実行します。
@@ -19,6 +33,8 @@ v -o vguard .
 ### 解析対象をビルドするV
 
 `vguard build --v` には、SSA対応表を出力できるVコンパイラを指定します。隣の `../v` に同梱の [VGuard対応パッチ](compiler/vguard.patch) を適用し、再ビルドしてください。パッチの基準リビジョンは `323045464d07c3f6e426f994cfbfe6cfb365ae84` です。
+VPMでインストールした場合、パッチは `$vguard_src/compiler/vguard.patch` にあります。
+`--v` に指定するコンパイラのチェックアウトに適用してください。
 
 ```sh
 # パッチが未適用の場合

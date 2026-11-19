@@ -126,6 +126,22 @@ jobs:
           sh -n examples/run_crash.sh
           ../host-v/v test .
 
+      - name: Verify installation through VPM
+        if: matrix.target == 'linux/amd64'
+        working-directory: ${{ runner.temp }}
+        env:
+          VMODULES: ${{ runner.temp }}/vguard-vpm-modules
+          VFLAGS: "-cc clang -gc none"
+        run: |
+          host_v="$GITHUB_WORKSPACE/host-v/v"
+          checkout="$GITHUB_WORKSPACE/vguard"
+          "$host_v" install --git "$checkout"
+          installed="$("$host_v" env VMODULES)/vguard"
+          test "$(git -C "$installed" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse HEAD)"
+          test -f "$installed/compiler/vguard.patch"
+          "$host_v" -o vguard-vpm "$installed"
+          ./vguard-vpm --help
+
       - name: Build VGuard and check the examples
         env:
           VGUARD_TARGET: ${{ matrix.target }}

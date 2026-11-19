@@ -7,9 +7,24 @@ and WebAssembly builds, it also reports the SSA value ID and opcode.
 
 ## Setup
 
+### Install with VPM
+
+With `v` and Git on your `PATH`, install the VGuard sources from GitHub and build the CLI
+from the installed package.
+
+```sh
+v install --git https://github.com/james-yusuke/vguard
+vguard_src="$(v env VMODULES)/vguard"
+v -o vguard "$vguard_src"
+./vguard --help
+```
+
+If VPM reports a different install directory, use the path it prints for `vguard_src`.
+You can also run the CLI directly with `v run "$vguard_src" --help`.
+
 ### Build VGuard
 
-With `v` on your `PATH`, run these commands from the repository root. Use `.` as the
+From a Git checkout, run these commands from the repository root. Use `.` as the
 compilation target because VGuard spans multiple `.v` files.
 
 ```sh
@@ -22,6 +37,8 @@ v -o vguard .
 `vguard build --v` requires a V compiler that can emit VGuard source maps. Apply the bundled
 [VGuard patch](compiler/vguard.patch) to the sibling `../v` checkout and rebuild the compiler.
 The patch is based on revision `323045464d07c3f6e426f994cfbfe6cfb365ae84`.
+For a VPM install, the patch is at `$vguard_src/compiler/vguard.patch`. Apply it in the V compiler
+checkout you plan to use with `--v`.
 
 ```sh
 # Apply the patch if it has not been applied.
