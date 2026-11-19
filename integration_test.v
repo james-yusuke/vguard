@@ -95,7 +95,7 @@ fn main() {
 	failed_trace := read_test_compile_trace(failed_output) or { panic(err) }
 	assert failed_trace.status == 'exited'
 	assert failed_trace.exit_code != 0
-	assert failed_trace.stages.any(it.name == 'check')
+	assert failed_trace.stages.any(it.name in ['check', 'check (parallel)'])
 	assert !failed_trace.stages.any(it.name == 'ssa build')
 	compiler_error := os.read_file(os.join_path(failed_output, 'compiler.stderr.log')) or { panic(err) }
 	assert compiler_error.contains('missing_api')
