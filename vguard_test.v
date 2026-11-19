@@ -4,6 +4,62 @@ import crypto.sha256
 import json2
 import os
 
+fn test_terminal_diagnosis_places_the_caret_after_tabs_and_wide_characters() {
+	dir := temp_directory() or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'sample.v')
+	line := '\tprintln("幅"); stop()'
+	os.write_file(path, 'fn main() {\n${line}\n}\n') or { panic(err) }
+	column := (line.index('stop') or { panic('missing test token') }) + 1
+	report := Diagnosis{
+		kind:     'crash'
+		reason:   'signal SIGABRT'
+		address:  '0x1234'
+		location: Location{
+			file:       path
+			function:   'main'
+			line:       2
+			column:     column
+			ssa_value:  5
+			ssa_opcode: 'call'
+			precision:  'caller_frame'
+		}
+	}
+	text := Bundle{}.format_diagnosis(report)
+	assert text.starts_with('error[crash]: signal SIGABRT\n')
+	assert text.contains('${path}:2:${column}')
+	assert text.contains(' 2 |     println("幅"); stop()\n   | ' + ' '.repeat(19) +
+		'^ first mapped V caller frame')
+	assert text.contains('  = SSA: %5 call')
+	assert text.contains('  = stop address: 0x1234')
+}
+
+fn test_terminal_resolution_keeps_the_location_when_source_is_stale_or_missing() {
+	dir := temp_directory() or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	path := os.join_path(dir, 'sample.v')
+	new_source := 'fn changed() {}\n'
+	os.write_file(path, new_source) or { panic(err) }
+	location := Location{ file: path, line: 1, column: 1 }
+	stale := Bundle{
+		manifest: Manifest{
+			options:       BuildOptions{ source: path }
+			source_sha256: digest('fn original() {}\n'.bytes())
+		}
+	}.format_resolution(location)
+	assert stale.contains('${path}:1:1')
+	assert stale.contains('the source has changed since the build')
+	assert !stale.contains('fn changed()')
+	os.rm(path) or { panic(err) }
+	missing := Bundle{}.format_resolution(location)
+	assert missing.contains('${path}:1:1')
+	assert missing.contains('source file is unavailable')
+}
+
 fn test_raw_code_range_uses_half_open_offsets() {
 	img := image([]u8{len: 12}, 'raw-arm64') or { panic(err) }
 	ranges := placed_ranges(img, [

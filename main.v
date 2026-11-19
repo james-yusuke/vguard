@@ -177,7 +177,11 @@ fn cli(argv []string) !int {
 	as_json := opts.switches['--json']
 	if command == 'resolve' {
 		location := resolve_cli(bundle, opts)!
-		println(if as_json { json2.encode(location) } else { location_text(location) })
+		if as_json {
+			println(json2.encode(location))
+		} else {
+			print(bundle.format_resolution(location))
+		}
 		return 0
 	}
 	scenario := load_case(opts.values['--case'])!
@@ -187,25 +191,11 @@ fn cli(argv []string) !int {
 			println(json2.encode(report))
 		} else {
 			print(report.outcome.stdout)
+			if report.outcome.stdout != '' && !report.outcome.stdout.ends_with('\n') {
+				println('')
+			}
 			eprint(report.outcome.stderr)
-			println('VGuard: ${report.kind} ${report.reason}'.trim_space())
-			if report.memory_errors.len == 0 {
-				if loc := report.location {
-					println(location_text(loc))
-				}
-			}
-			if report.location_error != '' {
-				println(report.location_error)
-			}
-			if report.ssa_file != '' {
-				println('SSA report: ${report.ssa_file}')
-			}
-			if report.ssa_error != '' {
-				println('SSA report unavailable: ${report.ssa_error}')
-			}
-			for i, finding in report.memory_errors {
-				print_memory_violation(finding, i > 0)
-			}
+			print(bundle.format_diagnosis(report))
 		}
 		return match report.kind {
 			'crash', 'memory_error' { 1 }
@@ -219,30 +209,7 @@ fn cli(argv []string) !int {
 	if as_json {
 		println(json2.encode(report))
 	} else {
-		println('VGuard comparison: ${report.kind}')
-		if report.target.stdout != report.reference.stdout {
-			println('target stdout: ${json2.encode(report.target.stdout)}')
-			println('reference stdout: ${json2.encode(report.reference.stdout)}')
-		}
-		if report.target.stderr != report.reference.stderr {
-			println('target stderr: ${json2.encode(report.target.stderr)}')
-			println('reference stderr: ${json2.encode(report.reference.stderr)}')
-		}
-		if report.target.exit_code != report.reference.exit_code || report.target.status != report.reference.status {
-			println('target status: ${report.target.status} (${report.target.exit_code})')
-			println('reference status: ${report.reference.status} (${report.reference.exit_code})')
-		}
-		if diff := report.divergence {
-			if target := diff.target {
-				println('target: ${target.file}:${target.line}:${target.column} ${target.kind} = ${target.value}')
-			}
-			if reference := diff.reference {
-				println('reference: ${reference.file}:${reference.line}:${reference.column} ${reference.kind} = ${reference.value}')
-			}
-		}
-		if report.location_error != '' {
-			println(report.location_error)
-		}
+		print(bundle.format_comparison(report))
 	}
 	return match report.kind {
 		'equal' { 0 }
@@ -260,7 +227,7 @@ fn main() {
 				'reason': err.msg()
 			}))
 		} else {
-			eprintln('VGuard: ${err.msg()}')
+			eprintln('error[vguard]: ${err.msg()}')
 		}
 		exit(2)
 	}

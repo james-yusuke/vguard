@@ -80,8 +80,10 @@ Use `resolve` to look up a recorded address or offset.
 | Offset in an ELF, Mach-O, or COFF object section | `--section 1 --offset 0x...` |
 | Byte offset in a WebAssembly module or a `-hot-fn` function | `--offset 0x...` |
 
-`resolve`, `run`, and `compare` support `--json`. Exit code 0 indicates success, 1 indicates a
-crash or a difference, and 2 indicates a tool error or an inconclusive result.
+`resolve`, `run`, and `compare` show a source excerpt in the terminal when a source location
+is available. The `^` marker points to the reported column, or `>` marks the line when only
+a line number is known. Use `--json` for machine-readable output. Exit code 0 indicates
+success, 1 indicates a crash or a difference, and 2 indicates a tool error or an inconclusive result.
 
 For direct amd64, arm64, and WebAssembly builds, `run` saves the mapped function and marks the
 crash-related SSA instruction in `diagnostics/crash-…/crash.ssa` inside the build directory.

@@ -194,25 +194,3 @@ fn (bundle &Bundle) system_debug_location(address u64) ?Location {
 	}
 	return none
 }
-
-fn print_memory_violation(finding MemoryViolation, include_kind bool) {
-	println(if include_kind {
-		'  ${finding.kind} (${finding.sanitizer})'
-	} else {
-		'  ${finding.sanitizer}'
-	})
-	if finding.access != '' || finding.address != '' {
-		size := if finding.size_bytes > 0 { ' ${finding.size_bytes} byte(s)' } else { '' }
-		address := if finding.address != '' { ' at ${finding.address}' } else { '' }
-		println('    ${finding.access}${size}${address}'.trim_right(' '))
-	}
-	if loc := finding.location {
-		println('    ${location_text(loc)}')
-	}
-	if loc := finding.allocation {
-		println('    Allocated at ${location_text(loc)}')
-	}
-	if loc := finding.deallocation {
-		println('    Freed at ${location_text(loc)}')
-	}
-}

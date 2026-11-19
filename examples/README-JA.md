@@ -15,7 +15,7 @@ VGuard本体のビルドには `PATH` 上の `v` を使います。特定のVを
 sh examples/run_crash.sh
 
 # examples ディレクトリで実行
-sh run_crash.sh --json
+sh run_crash.sh
 ```
 
 `VGUARD_TARGET_V` には、`-vguard-map` に対応するVコンパイラのパスを指定します。`vguard` は診断を実行するCLIです。
@@ -44,13 +44,14 @@ VGUARD_TARGET_V=/path/to/patched/v sh examples/run_crash.sh --json
 
 ```sh
 sh examples/run_crash.sh --list
-sh examples/run_crash.sh --example deferred_validation --json
-sh examples/run_crash.sh --example rounded_divisor --json
-sh examples/run_crash.sh --example division_overflow --json
+sh examples/run_crash.sh --example deferred_validation
+sh examples/run_crash.sh --example rounded_divisor
+sh examples/run_crash.sh --example division_overflow
 ```
 
 どの例も終了コード 1 になり、停止位置に印を付けたSSAレポートが出力されます。
-JSONの `location` を予想と見比べ、`ssa_file` のファイルを開いて該当命令を確認できます。
+端末に表示されるソース行と `^` を予想と見比べ、`SSA report` に表示されたファイルを開いて
+該当命令を確認できます。`--json` を付けると、同じ位置とパスを `location` と `ssa_file` に出力します。
 
 <details>
 <summary>停止箇所とSSA命令を見る</summary>

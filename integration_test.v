@@ -64,6 +64,12 @@ fn main() {
 	assert first.kind == 'assignment'
 	assert first.line == 10
 	assert first.value == 'false'
+	text := bundle.format_comparison(report)
+	assert text.contains('error[comparison]: target and reference results differ')
+	assert text.contains('^ first differing trace event')
+	assert text.contains("selected := os.executable().contains('reference')")
+	assert text.contains('= target: assignment = false')
+	assert text.contains('= reference: assignment = true')
 }
 
 fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
@@ -114,6 +120,9 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 		assert ssa_report.contains('>>> SSA instruction mapped from the crash')
 		assert ssa_report.contains('  %${location.ssa_value} = sdiv ')
 		assert !ssa_report.contains('fn "main"(')
+		text := bundle.format_diagnosis(diagnosis)
+		assert text.contains('^ stop mapped here')
+		assert text.contains('= SSA: %${location.ssa_value} sdiv')
 	}
 }
 

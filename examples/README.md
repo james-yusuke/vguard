@@ -16,7 +16,7 @@ See [how to build the target compiler](../README.md#build-the-target-compiler).
 sh examples/run_crash.sh
 
 # From the examples directory
-sh run_crash.sh --json
+sh run_crash.sh
 ```
 
 Set `VGUARD_TARGET_V` to the path of a V compiler that supports `-vguard-map`.
@@ -53,13 +53,14 @@ same debugger as above. The WebAssembly examples need `wasmtime` on `PATH`.
 
 ```sh
 sh examples/run_crash.sh --list
-sh examples/run_crash.sh --example deferred_validation --json
-sh examples/run_crash.sh --example rounded_divisor --json
-sh examples/run_crash.sh --example division_overflow --json
+sh examples/run_crash.sh --example deferred_validation
+sh examples/run_crash.sh --example rounded_divisor
+sh examples/run_crash.sh --example division_overflow
 ```
 
-Each run returns exit code 1 and writes a marked SSA report. Compare the JSON `location` with
-your prediction, then open the file at `ssa_file` to see the marked instruction.
+Each run returns exit code 1 and writes a marked SSA report. Compare the source excerpt and its
+`^` marker with your prediction, then open the file listed under `SSA report`.
+Add `--json` to get the same location and report path in `location` and `ssa_file`.
 
 <details>
 <summary>Expected stops and SSA instructions</summary>

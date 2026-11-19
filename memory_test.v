@@ -201,6 +201,12 @@ fn C.vguard_unpoison(p voidptr)
 				assert freed.line == 21
 				assert loc.line == 22
 				assert finding.access == 'write'
+				text := bundle.format_diagnosis(report)
+				assert text.contains('error[heap-use-after-free]: write of 1 byte at ')
+				assert text.contains('>22 |')
+				assert text.contains('note: allocation site')
+				assert text.contains('note: deallocation site')
+				assert !text.contains('^')
 			}
 			'poison' {
 				// The compiler-inserted check observes the shadow marker before the V load.
