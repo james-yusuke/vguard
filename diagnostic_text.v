@@ -160,10 +160,17 @@ fn (bundle &Bundle) format_diagnosis(report Diagnosis) string {
 		out.writeln('  = note: ${report.location_error}')
 	}
 	if report.ssa_file != '' {
-		out.writeln('  = SSA report: ${report.ssa_file}')
+		out.writeln('  = original SSA: ${report.ssa_original_file}')
+		out.writeln('  = annotated SSA: ${report.ssa_file}')
 	}
 	if report.ssa_error != '' {
-		out.writeln('  = note: SSA report unavailable (${report.ssa_error})')
+		out.writeln('  = note: SSA report (${report.ssa_error})')
+	}
+	if report.ssa_excerpt.original != '' {
+		out.writeln('\nSSA (original)')
+		out.write_string(report.ssa_excerpt.original)
+		out.writeln('\nSSA (annotated)')
+		out.write_string(report.ssa_excerpt.annotated)
 	}
 	return out.str()
 }

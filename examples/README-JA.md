@@ -78,8 +78,19 @@ Wasmの例には `PATH` 上の `wasmtime` が必要です。
 ./vguard run "$work/division-overflow/build.json"
 ```
 
-端末のソース行と `^` を予想と見比べてください。`run` に `--json` を付けると、
-同じ位置とレポートパスを `location` と `ssa_file` に出力します。
+端末のソース行と `^` を予想と見比べてください。同じ関数が `SSA (original)` と `SSA (annotated)` に表示されます。
+切り捨ての例では、2回目の除算命令 `sdiv` の行末に印が付きます。SSAの値番号はビルドによって変わります。
+
+```text
+SSA (original)
+  %5770 = sdiv t2 %5768, %5769
+
+SSA (annotated)
+  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here
+```
+
+両方のSSAは同じクラッシュレポートのディレクトリに保存されます。`run` に `--json` を付けると、
+ソース位置を `location` に、ファイルのパスを `ssa_original_file` と `ssa_file` に出力します。
 
 <details>
 <summary>停止箇所とSSA命令を見る</summary>

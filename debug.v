@@ -4,15 +4,17 @@ import os
 import strconv
 
 struct Diagnosis {
-	kind           string
-	reason         string
-	address        string
-	location       ?Location
-	location_error string
-	ssa_file       string
-	ssa_error      string
-	memory_errors  []MemoryViolation @[omitempty]
-	outcome        Outcome
+	kind              string
+	reason            string
+	address           string
+	location          ?Location
+	location_error    string
+	ssa_file          string
+	ssa_original_file string @[omitempty]
+	ssa_error         string
+	ssa_excerpt       SsaExcerpt        @[skip]
+	memory_errors     []MemoryViolation @[omitempty]
+	outcome           Outcome
 }
 
 struct NativeStop {

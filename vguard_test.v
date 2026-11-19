@@ -171,15 +171,37 @@ bb2:
 	}
 	output := bundle.with_crash_ssa(report)
 	assert output.ssa_error == ''
+	assert os.dir(output.ssa_original_file) == os.dir(output.ssa_file)
+	original := os.read_file(output.ssa_original_file) or { panic(err) }
+	assert original == 'fn "crash_here"() : t1 {\nbb1:\n  %11 = call t1 @"abort"\n  %12 = ret t1\n}\n'
+	marker := '  ; <<< first mapped V caller frame'
 	ssa_report := os.read_file(output.ssa_file) or { panic(err) }
 	assert ssa_report.contains('sample.v:7:2')
-	assert ssa_report.contains('>>> SSA instruction mapped from the crash (caller_frame)\n  %11 = call')
+	assert ssa_report.contains('  %11 = call t1 @"abort"${marker}\n')
+	assert ssa_report.count(marker) == 1
+	assert ssa_report.all_after('\n\n').replace(marker, '') == original
 	assert !ssa_report.contains('fn "other"')
+	text := bundle.format_diagnosis(output)
+	assert text.contains('SSA (original)\n${original}\nSSA (annotated)\n${ssa_report.all_after('\n\n')}')
+	encoded := json2.encode(output)
+	assert encoded.contains('"ssa_original_file"')
+	assert encoded.contains('"ssa_file"')
+	assert !encoded.contains('"ssa_excerpt"')
+
+	diagnostics := os.join_path(dir, 'diagnostics')
+	os.rmdir_all(diagnostics) or { panic(err) }
+	os.write_file(diagnostics, 'prevents the creation of a report directory') or { panic(err) }
+	unsaved := bundle.with_crash_ssa(report)
+	assert unsaved.ssa_error != ''
+	assert unsaved.ssa_file == ''
+	assert unsaved.ssa_original_file == ''
+	assert bundle.format_diagnosis(unsaved).contains('SSA (original)\n${original}\nSSA (annotated)\n')
 
 	os.write_file(path, snapshot.replace('@"abort"', '@"other"')) or { panic(err) }
 	stale := bundle.with_crash_ssa(report)
 	assert stale.kind == 'crash'
 	assert stale.ssa_file == ''
+	assert stale.ssa_original_file == ''
 	assert stale.ssa_error.contains('SHA-256')
 }
 

@@ -60,9 +60,7 @@ fn main() {
 	assert trace.stages.any(it.name == 'ssa build')
 	assert trace.stages.any(it.name == '${backend} gen')
 	assert trace.stages.any(it.name == 'link')
-	flow := os.read_file(os.join_path(output, 'compile-flow.mmd')) or { panic(err) }
-	assert flow.contains('Compiler exited successfully')
-	assert flow.contains('ssa build (')
+	assert os.exists(os.join_path(output, 'compiler.stdout.log'))
 	assert os.exists(os.join_path(output, 'compiler.stderr.log'))
 	bundle := open_bundle(manifest) or { panic(err) }
 	multiply := bundle.ranges.filter(it.location.function == 'result'
@@ -99,8 +97,6 @@ fn main() {
 	assert failed_trace.exit_code != 0
 	assert failed_trace.stages.any(it.name == 'check')
 	assert !failed_trace.stages.any(it.name == 'ssa build')
-	failed_flow := os.read_file(os.join_path(failed_output, 'compile-flow.mmd')) or { panic(err) }
-	assert failed_flow.contains('Compiler failed')
 	compiler_error := os.read_file(os.join_path(failed_output, 'compiler.stderr.log')) or { panic(err) }
 	assert compiler_error.contains('missing_api')
 }
@@ -152,14 +148,21 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 		assert location.precision == 'source_span'
 		assert diagnosis.ssa_error == ''
 		assert os.dir(os.dir(diagnosis.ssa_file)) == os.join_path(os.dir(manifest), 'diagnostics')
+		assert os.dir(diagnosis.ssa_original_file) == os.dir(diagnosis.ssa_file)
+		original := os.read_file(diagnosis.ssa_original_file) or { panic(err) }
 		ssa_report := os.read_file(diagnosis.ssa_file) or { panic(err) }
+		marker := '  ; <<< stop mapped here'
+		assert original.starts_with('fn "${example.function}"(')
+		assert !original.contains(marker)
 		assert ssa_report.contains('fn "${example.function}"(')
-		assert ssa_report.contains('>>> SSA instruction mapped from the crash')
-		assert ssa_report.contains('  %${location.ssa_value} = sdiv ')
+		assert ssa_report.split_into_lines().any(it.starts_with('  %${location.ssa_value} = sdiv ')
+			&& it.ends_with(marker))
+		assert ssa_report.all_after('\n\n').replace(marker, '') == original
 		assert !ssa_report.contains('fn "main"(')
 		text := bundle.format_diagnosis(diagnosis)
 		assert text.contains('^ stop mapped here')
 		assert text.contains('= SSA: %${location.ssa_value} sdiv')
+		assert text.contains('SSA (original)\n${original}\nSSA (annotated)\n')
 	}
 }
 

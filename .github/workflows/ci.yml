@@ -190,8 +190,15 @@ jobs:
               if name == "deferred_validation":
                   assert crash["outcome"]["stdout"] == "Finished reading the batch.\n", crash
               ssa = Path(crash["ssa_file"])
-              assert ">>>" in ssa.read_text(), ssa
+              original_ssa = Path(crash["ssa_original_file"])
+              label = ("first mapped V caller frame" if crash["location"]["precision"] == "caller_frame"
+                       else "stop mapped here")
+              marker = "  ; <<< " + label
+              annotated = ssa.read_text().split("\n\n", 1)[1]
+              assert annotated.count(marker) == 1, ssa
+              assert annotated.replace(marker, "") == original_ssa.read_text(), original_ssa
               shutil.copyfile(ssa, artifacts / f"{name}.ssa")
+              shutil.copyfile(original_ssa, artifacts / f"{name}-original.ssa")
 
           memory = json.loads((artifacts / "memory.json").read_text())
           assert memory["kind"] == "exited" and memory["outcome"]["exit_code"] == 0, memory
