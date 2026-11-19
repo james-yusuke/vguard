@@ -1,5 +1,6 @@
 module main
 
+import json2
 import os
 
 fn test_companion_compiler_resolves_ssa_and_traces_the_first_difference() {
@@ -41,13 +42,28 @@ fn main() {
 ") or {
 		panic(err)
 	}
-	manifest := build(BuildOptions{
+	options := BuildOptions{
 		source:   os.real_path(source)
 		compiler: os.real_path(compiler)
 		backend:  backend
 		target:   os.user_os() + '/' + backend
 		args:     ['-gc', 'none']
-	}, os.join_path(dir, 'target'), false) or { panic(err) }
+	}
+	output := os.join_path(dir, 'target')
+	manifest := build(options, output, false, trace_build: true) or { panic(err) }
+	trace := read_test_compile_trace(output) or { panic(err) }
+	assert trace.backend == backend
+	assert trace.target == options.target
+	assert trace.artifact == 'program'
+	assert trace.status == 'exited'
+	assert trace.exit_code == 0
+	assert trace.stages.any(it.name == 'ssa build')
+	assert trace.stages.any(it.name == '${backend} gen')
+	assert trace.stages.any(it.name == 'link')
+	flow := os.read_file(os.join_path(output, 'compile-flow.mmd')) or { panic(err) }
+	assert flow.contains('Compiler exited successfully')
+	assert flow.contains('ssa build (')
+	assert os.exists(os.join_path(output, 'compiler.stderr.log'))
 	bundle := open_bundle(manifest) or { panic(err) }
 	multiply := bundle.ranges.filter(it.location.function == 'result'
 		&& it.location.ssa_opcode == 'mul')
@@ -70,6 +86,27 @@ fn main() {
 	assert text.contains("selected := os.executable().contains('reference')")
 	assert text.contains('= target: assignment = false')
 	assert text.contains('= reference: assignment = true')
+
+	rejected := os.join_path(dir, 'rejected.v')
+	os.write_file(rejected, 'fn main() { missing_api() }\n') or { panic(err) }
+	failed_output := os.join_path(dir, 'rejected')
+	build(BuildOptions{ ...options, source: rejected }, failed_output, false, trace_build: true) or {
+		assert err.msg().contains('V build failed')
+	}
+	assert !os.exists(os.join_path(failed_output, 'build.json'))
+	failed_trace := read_test_compile_trace(failed_output) or { panic(err) }
+	assert failed_trace.status == 'exited'
+	assert failed_trace.exit_code != 0
+	assert failed_trace.stages.any(it.name == 'check')
+	assert !failed_trace.stages.any(it.name == 'ssa build')
+	failed_flow := os.read_file(os.join_path(failed_output, 'compile-flow.mmd')) or { panic(err) }
+	assert failed_flow.contains('Compiler failed')
+	compiler_error := os.read_file(os.join_path(failed_output, 'compiler.stderr.log')) or { panic(err) }
+	assert compiler_error.contains('missing_api')
+}
+
+fn read_test_compile_trace(out string) !CompileTrace {
+	return json2.decode[CompileTrace](os.read_file(os.join_path(out, 'compile-trace.json'))!)
 }
 
 fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {

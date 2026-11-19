@@ -91,6 +91,26 @@ Vの通常のビルド依存関係に加え、`run` はLinuxでGDB、macOS・Win
 
 amd64・arm64・Wasmの直接生成では、クラッシュに対応するSSAが見つかると、`run` がビルドフォルダ内の `diagnostics/crash-…/crash.ssa` に該当関数と命令を書き出します。JSONの `ssa_file` に保存先、SSAの読み込みや保存に失敗した場合は `ssa_error` に理由が入ります。SSAの保存に対応するVコンパイラで対象をビルドしてください。
 
+### ネイティブコンパイルの追跡
+
+`amd64` または `arm64` バックエンドで直接生成するときに `--trace-build` を付けます。
+Apple Siliconでは、リポジトリのルートからパッチ適用済みのVコンパイラを指定して実行します。
+
+```sh
+./vguard build examples/crash.v --v ../v/v --backend arm64 --target macos/arm64 \
+  --trace-build --out ./trace-build --v-arg -gc --v-arg none
+```
+
+ビルド中のコンパイラ出力は標準エラーに表示されます。コンパイルが失敗した場合も、`--out` のディレクトリに以下のファイルが残ります。
+
+| ファイル | 内容 |
+|---|---|
+| `compile-flow.mmd` | Vが報告した工程とコンパイラの終了結果を示すMermaid図 |
+| `compile-trace.json` | Vが報告した工程名、工程ごとの所要時間とメモリ使用量（RSS）、コンパイラの全体所要時間 |
+| `compiler.stdout.log`、`compiler.stderr.log` | コンパイラの標準出力と標準エラーの記録 |
+
+`compile-flow.mmd` は、Mermaid対応ビューアーで開くか、内容をMarkdownの `mermaid` コードブロックに貼り付けて表示できます。矢印はVが `-show-timings` で工程を報告した順序を示します。並列処理では工程ごとの計測時間が重なる場合があります。arm64のオブジェクト出力では、Vが `link` と報告する工程を図ではオブジェクトとSSAマップの書き出しと表示します。VGuardのビルドが成功すると `build.json` も生成され、`run`・`resolve`・`compare` に渡せます。
+
 ## メモリ安全性の検査
 
 Cバックエンドで `--memory` を付けて実行形式をビルドし、既存のJSONケースを `run` に渡します。

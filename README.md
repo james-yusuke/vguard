@@ -107,6 +107,31 @@ crash-related SSA instruction in `diagnostics/crash-…/crash.ssa` inside the bu
 The JSON report includes the path in `ssa_file` or a read or write error in `ssa_error`.
 Build the target with a V compiler that supports SSA snapshots.
 
+### Trace native compilation
+
+Add `--trace-build` to a direct `amd64` or `arm64` build. For example, on Apple Silicon,
+run this command from the repository root with the patched target compiler.
+
+```sh
+./vguard build examples/crash.v --v ../v/v --backend arm64 --target macos/arm64 \
+  --trace-build --out ./trace-build --v-arg -gc --v-arg none
+```
+
+VGuard forwards compiler output to standard error during the build. The output directory
+contains these files, including when the compiler fails.
+
+| File | Contents |
+|---|---|
+| `compile-flow.mmd` | Mermaid flowchart of the stages reported by V and the compiler result |
+| `compile-trace.json` | Original stage labels, durations, RSS, and elapsed compiler time |
+| `compiler.stdout.log`, `compiler.stderr.log` | The compiler's captured output streams |
+
+Open `compile-flow.mmd` with a Mermaid viewer or paste its contents into a Markdown
+`mermaid` block. The arrows follow the order in which V reported the stages with
+`-show-timings`. Parallel work can make stage durations overlap. For arm64 object builds,
+the diagram labels V's `link` timing as object and SSA map output. A successful VGuard
+build also writes `build.json` for `run`, `resolve`, and `compare`.
+
 ## Memory safety checks
 
 Build a standalone executable with the C backend and `--memory`, then run it with the
