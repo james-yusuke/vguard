@@ -2,39 +2,54 @@
 
 [English](README.md) · 日本語
 
+## 準備
+
+リポジトリのルートでVGuardのCLIをビルドします。
+
+```sh
+v -o vguard .
+./vguard --help
+```
+
+`target_v` には[パッチを適用したVコンパイラ](../README-JA.md#解析対象をビルドするv)を指定します。
+再ビルドしたコンパイラの名前が `v` の場合は `../v/v` を指定してください。
+ネイティブのバックエンドとターゲットは、実行するホストに合わせます。
+
+| ホスト | `backend` | `target` | デバッガー |
+|---|---|---|---|
+| macOS/arm64 | `arm64` | `macos/arm64` | LLDB |
+| Linux/amd64 | `amd64` | `linux/amd64` | GDB |
+| Linux/arm64 | `arm64` | `linux/arm64` | GDB |
+
+```sh
+target_v=../v/v-vguard
+backend=arm64
+target=macos/arm64
+work=$(mktemp -d)
+```
+
+以降も同じシェルで実行します。`./vguard build` にVソースを渡し、生成された
+`build.json` を `./vguard run` に渡します。ビルドし直す場合は新しい `work` を作成してください。
+
 ## クラッシュの検知
 
 [`crash.v`](crash.v) は `crash_here()` から `C.abort()` を呼び、意図的に `SIGABRT` で停止します。
 
-VGuard本体のビルドには `PATH` 上の `v` を使います。特定のVを使うには `VGUARD_HOST_V` にパスを指定します。
-サンプルのコンパイルには、VGuard対応版の `../v/v-vguard` があればそれを使い、それ以外は再ビルド済みの
-`../v/v` を使います。[Vコンパイラのセットアップ](../README-JA.md#解析対象をビルドするv)
-
 ```sh
-# リポジトリのルートで実行
-sh examples/run_crash.sh
-
-# examples ディレクトリで実行
-sh run_crash.sh
+./vguard build examples/crash.v --v "$target_v" --backend "$backend" --target "$target" \
+  --out "$work/crash" --v-arg -gc --v-arg none
+./vguard run "$work/crash/build.json"
 ```
 
-`VGUARD_TARGET_V` には、`-vguard-map` に対応するVコンパイラのパスを指定します。`vguard` は診断を実行するCLIです。
-
-```sh
-VGUARD_TARGET_V=/path/to/patched/v sh examples/run_crash.sh --json
-```
-
-ネイティブの例はmacOS/arm64とLinux/amd64・arm64に対応します。macOSではLLDB、LinuxではGDBが必要です。
-
-1. `vguard build` がサンプルをネイティブバイナリに変換し、`program.vgmap.json` にSSAとソースの対応、`program.vgmap.json.ssa` にコード生成時のSSAを保存します。スクリプトが表示する `build.json` と同じフォルダに生成されます。
-2. `vguard run` がデバッガーで実行し、`SIGABRT` を検知します。停止した命令はランタイム内にあるため、VGuardはV側の呼び出し元フレームを調べます。
-3. 結果には [`crash.v` の7行目](crash.v#L7) と、その `C.abort()` に対応するSSAの `call` が表示されます。`caller_frame` は呼び出し元から得た位置を表し、終了コード `1` はこのサンプルではクラッシュ検知を意味します。
-4. `build.json` の隣に `diagnostics/crash-…/crash.ssa` を作成します。このファイルには `crash_here` のSSAが入り、該当命令の直前に `>>>` が付きます。端末では `SSA report`、JSONでは `ssa_file` にフルパスが表示されます。
+デバッガーが `SIGABRT` を検知し、V側の呼び出し元である [`crash.v` の7行目](crash.v#L7) に
+`^` が付きます。`SSA report` に表示されたファイルを開くと、対応する `call` 命令の直前に
+`>>>` が付きます。保存先は `build.json` の隣の `diagnostics/` です。
+クラッシュ例では、意図した停止を検知すると終了コードが 1 になります。
 
 ## どこで止まるか予想する
 
-先にVソースを読んで、停止する行を予想してから `--example` で実行してみてください。
-ネイティブの例には上記と同じデバッガーが必要です。Wasmの例には `PATH` 上の `wasmtime` が必要です。
+先にVソースを読んで、停止する行を予想してから実行してみてください。
+ネイティブの例は上と同じバックエンドとデバッガーを使います。
 
 | 実行例 | 注目する点 | 実行方式 |
 |---|---|---|
@@ -43,15 +58,28 @@ VGUARD_TARGET_V=/path/to/patched/v sh examples/run_crash.sh --json
 | [`division_overflow`](crashes/division_overflow.v) | 除数がゼロ以外 | Wasm |
 
 ```sh
-sh examples/run_crash.sh --list
-sh examples/run_crash.sh --example deferred_validation
-sh examples/run_crash.sh --example rounded_divisor
-sh examples/run_crash.sh --example division_overflow
+./vguard build examples/crashes/deferred_validation.v --v "$target_v" \
+  --backend "$backend" --target "$target" --out "$work/deferred-validation" \
+  --v-arg -gc --v-arg none
+./vguard run "$work/deferred-validation/build.json"
 ```
 
-どの例も終了コード 1 になり、停止位置に印を付けたSSAレポートが出力されます。
-端末に表示されるソース行と `^` を予想と見比べ、`SSA report` に表示されたファイルを開いて
-該当命令を確認できます。`--json` を付けると、同じ位置とパスを `location` と `ssa_file` に出力します。
+Wasmの例には `PATH` 上の `wasmtime` が必要です。
+
+```sh
+./vguard build examples/crashes/rounded_divisor.v --v "$target_v" \
+  --backend wasm --target wasm32_emscripten/wasm32 --out "$work/rounded-divisor"
+./vguard run "$work/rounded-divisor/build.json"
+```
+
+```sh
+./vguard build examples/crashes/division_overflow.v --v "$target_v" \
+  --backend wasm --target wasm32_emscripten/wasm32 --out "$work/division-overflow"
+./vguard run "$work/division-overflow/build.json"
+```
+
+端末のソース行と `^` を予想と見比べてください。`run` に `--json` を付けると、
+同じ位置とレポートパスを `location` と `ssa_file` に出力します。
 
 <details>
 <summary>停止箇所とSSA命令を見る</summary>
@@ -66,19 +94,24 @@ sh examples/run_crash.sh --example division_overflow
 
 </details>
 
+### Wasmの停止アドレスを逆引きする
+
+レポートの `stop address` をモジュール内オフセットとして指定します。以下は `0x1d5` の例です。
+
+```sh
+./vguard resolve "$work/rounded-divisor/build.json" --offset 0x1d5
+```
+
 ## メモリ検査
 
 [`memory_scan/main.v`](memory_scan/main.v) は `--memory` の正常系サンプルです。
 [ケースファイル](memory_scan/case.json) は引数でラベルを、標準入力でメッセージを渡します。
-VGuardと[解析対象をビルドするV](../README-JA.md#解析対象をビルドするv)を準備し、macOS/arm64では
-リポジトリのルートで次のように実行します。
+ホストと同じターゲットと、サニタイザーランタイムが入ったClangを使います。
 
 ```sh
-work=$(mktemp -d)
-./vguard build examples/memory_scan --v ../v/v-vguard --backend c --target macos/arm64 --memory --out "$work/build"
-./vguard run "$work/build/build.json" --case examples/memory_scan/case.json --json
+./vguard build examples/memory_scan --v "$target_v" --backend c --target "$target" \
+  --memory --out "$work/memory-scan"
+./vguard run "$work/memory-scan/build.json" --case examples/memory_scan/case.json
 ```
 
-Linuxではホストに合わせて `linux/amd64` または `linux/arm64` を指定します。期待結果は終了コード 0、
-`kind` が `exited`、対象の標準出力が `sample: VGuard` です。CIでもこの例を実行し、
-JSONレポートを成果物に保存します。
+`sample: VGuard` に続いて `VGuard: exited successfully` が表示され、終了コードは 0 になります。

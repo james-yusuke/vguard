@@ -2,48 +2,53 @@
 
 English · [日本語](README-JA.md)
 
+## Set up VGuard
+
+Run these commands from the repository root to build the CLI.
+
+```sh
+v -o vguard .
+./vguard --help
+```
+
+Set `target_v` to the path of your [patched V compiler](../README.md#build-the-target-compiler).
+If your rebuilt compiler is named `v`, use `../v/v`. Set the native backend and target for your host.
+
+| Host | `backend` | `target` | Debugger |
+|---|---|---|---|
+| macOS/arm64 | `arm64` | `macos/arm64` | LLDB |
+| Linux/amd64 | `amd64` | `linux/amd64` | GDB |
+| Linux/arm64 | `arm64` | `linux/arm64` | GDB |
+
+```sh
+target_v=../v/v-vguard
+backend=arm64
+target=macos/arm64
+work=$(mktemp -d)
+```
+
+Keep the same shell for the examples below. Pass the source to `./vguard build` and the
+generated `build.json` to `./vguard run`. Create a fresh `work` directory to rebuild the examples.
+
 ## Crash detection
 
 [`crash.v`](crash.v) deliberately stops with `SIGABRT` by calling `C.abort()` from `crash_here()`.
 
-The script builds VGuard with `v` from `PATH`. Set `VGUARD_HOST_V` to use a specific compiler.
-It compiles the example with the patched `../v/v-vguard` if available, or with the rebuilt
-`../v/v` otherwise.
-See [how to build the target compiler](../README.md#build-the-target-compiler).
-
 ```sh
-# From the repository root
-sh examples/run_crash.sh
-
-# From the examples directory
-sh run_crash.sh
+./vguard build examples/crash.v --v "$target_v" --backend "$backend" --target "$target" \
+  --out "$work/crash" --v-arg -gc --v-arg none
+./vguard run "$work/crash/build.json"
 ```
 
-Set `VGUARD_TARGET_V` to the path of a V compiler that supports `-vguard-map`.
-The `vguard` executable is the diagnostic CLI.
-
-```sh
-VGUARD_TARGET_V=/path/to/patched/v sh examples/run_crash.sh --json
-```
-
-The native examples support macOS/arm64 with LLDB, and Linux/amd64 and Linux/arm64 with GDB.
-
-1. `vguard build` compiles the example to a native binary. It writes the source-to-SSA mapping to
-   `program.vgmap.json` and the code generation SSA to `program.vgmap.json.ssa`. Find both files
-   next to the `build.json` path printed by the script.
-2. `vguard run` runs the example under a debugger and detects `SIGABRT`. Since execution stops
-   inside the runtime, VGuard looks up the V caller frame.
-3. VGuard reports [line 7 of `crash.v`](crash.v#L7) and the SSA `call` for `C.abort()`.
-   The `caller_frame` precision indicates where VGuard found the location. Exit code 1 indicates
-   that VGuard detected the crash.
-4. VGuard writes the SSA for `crash_here` to `diagnostics/crash-…/crash.ssa` next to `build.json`.
-   The line immediately above the mapped instruction contains `>>>`. Find the full path under
-   `SSA report` in the terminal or `ssa_file` in JSON.
+The debugger reports `SIGABRT`. The `^` marker points to [line 7 of `crash.v`](crash.v#L7), the
+first mapped V caller frame. Open the file listed under `SSA report` to find `>>>` above the
+corresponding `call` instruction. The report is saved under `diagnostics/` beside `build.json`.
+The crash examples return exit code 1 when VGuard detects the expected failure.
 
 ## Can you predict where it stops?
 
-Read each source first, then pick an example with `--example`. The native example needs the
-same debugger as above. The WebAssembly examples need `wasmtime` on `PATH`.
+Read each source first and predict where it will stop. Run the native example with the same
+backend and debugger as above.
 
 | Example | What to look at | Target |
 |---|---|---|
@@ -52,15 +57,28 @@ same debugger as above. The WebAssembly examples need `wasmtime` on `PATH`.
 | [`division_overflow`](crashes/division_overflow.v) | The division uses a nonzero divisor. | WebAssembly |
 
 ```sh
-sh examples/run_crash.sh --list
-sh examples/run_crash.sh --example deferred_validation
-sh examples/run_crash.sh --example rounded_divisor
-sh examples/run_crash.sh --example division_overflow
+./vguard build examples/crashes/deferred_validation.v --v "$target_v" \
+  --backend "$backend" --target "$target" --out "$work/deferred-validation" \
+  --v-arg -gc --v-arg none
+./vguard run "$work/deferred-validation/build.json"
 ```
 
-Each run returns exit code 1 and writes a marked SSA report. Compare the source excerpt and its
-`^` marker with your prediction, then open the file listed under `SSA report`.
-Add `--json` to get the same location and report path in `location` and `ssa_file`.
+The WebAssembly examples need `wasmtime` on `PATH`.
+
+```sh
+./vguard build examples/crashes/rounded_divisor.v --v "$target_v" \
+  --backend wasm --target wasm32_emscripten/wasm32 --out "$work/rounded-divisor"
+./vguard run "$work/rounded-divisor/build.json"
+```
+
+```sh
+./vguard build examples/crashes/division_overflow.v --v "$target_v" \
+  --backend wasm --target wasm32_emscripten/wasm32 --out "$work/division-overflow"
+./vguard run "$work/division-overflow/build.json"
+```
+
+Compare the source excerpt and `^` marker with your prediction. Add `--json` to `run` to get
+the same location and report path in `location` and `ssa_file`.
 
 <details>
 <summary>Expected stops and SSA instructions</summary>
@@ -76,19 +94,24 @@ Add `--json` to get the same location and report path in `location` and `ssa_fil
 
 </details>
 
+### Look up a WebAssembly stop address
+
+Use the `stop address` from your report as the module offset. This example uses `0x1d5`.
+
+```sh
+./vguard resolve "$work/rounded-divisor/build.json" --offset 0x1d5
+```
+
 ## Memory check
 
 [`memory_scan/main.v`](memory_scan/main.v) is a normal execution case for `--memory`.
 The [case file](memory_scan/case.json) passes a label as an argument and a message on stdin.
-Run these commands from the repository root on macOS/arm64 after building VGuard and its
-[target compiler](../README.md#build-the-target-compiler).
+Use the native target for your host and a Clang toolchain with sanitizer runtimes.
 
 ```sh
-work=$(mktemp -d)
-./vguard build examples/memory_scan --v ../v/v-vguard --backend c --target macos/arm64 --memory --out "$work/build"
-./vguard run "$work/build/build.json" --case examples/memory_scan/case.json --json
+./vguard build examples/memory_scan --v "$target_v" --backend c --target "$target" \
+  --memory --out "$work/memory-scan"
+./vguard run "$work/memory-scan/build.json" --case examples/memory_scan/case.json
 ```
 
-Use `linux/amd64` or `linux/arm64` on a matching Linux host. Expect exit code 0, report kind
-`exited`, and target stdout `sample: VGuard`. The CI workflow also runs this example and
-uploads its JSON report.
+Expect `sample: VGuard`, followed by `VGuard: exited successfully` and exit code 0.
