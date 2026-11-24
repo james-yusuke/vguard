@@ -174,8 +174,9 @@ bb2:
 	assert os.dir(output.ssa_original_file) == os.dir(output.ssa_file)
 	original := os.read_file(output.ssa_original_file) or { panic(err) }
 	assert original == 'fn "crash_here"() : t1 {\nbb1:\n  %11 = call t1 @"abort"\n  %12 = ret t1\n}\n'
-	marker := '  ; <<< first mapped V caller frame'
+	marker := '  ; <<< first mapped V caller frame. error[crash]: signal SIGABRT'
 	ssa_report := os.read_file(output.ssa_file) or { panic(err) }
+	assert ssa_report.contains('; error[crash]: signal SIGABRT\n')
 	assert ssa_report.contains('sample.v:7:2')
 	assert ssa_report.contains('  %11 = call t1 @"abort"${marker}\n')
 	assert ssa_report.count(marker) == 1
@@ -183,6 +184,7 @@ bb2:
 	assert !ssa_report.contains('fn "other"')
 	text := bundle.format_diagnosis(output)
 	assert text.contains('SSA (original)\n${original}\nSSA (annotated)\n${ssa_report.all_after('\n\n')}')
+	assert bundle.format_ssa_diagnosis(output) == ssa_report
 	encoded := json2.encode(output)
 	assert encoded.contains('"ssa_original_file"')
 	assert encoded.contains('"ssa_file"')
@@ -203,6 +205,18 @@ bb2:
 	assert stale.ssa_file == ''
 	assert stale.ssa_original_file == ''
 	assert stale.ssa_error.contains('SHA-256')
+	ssa_error := bundle.format_ssa_diagnosis(stale)
+	assert ssa_error.split_into_lines().all(it.starts_with('; '))
+	assert ssa_error.contains('SSA snapshot SHA-256 does not match')
+}
+
+fn test_ssa_crash_annotation_keeps_multiline_errors_in_one_comment() {
+	snapshot := '; VGuard SSA v1\nfn "main"() : t0 {\nbb1:\n  %5 = unreachable t0\n}\n'
+	report := Diagnosis{ kind: 'crash', reason: 'stop\r\nnew line' }
+	location := Location{ ssa_value: 5, ssa_opcode: 'unreachable' }
+	excerpt := crash_ssa_excerpt(snapshot, location, report.crash_error()) or { panic(err) }
+	assert excerpt.annotated.split_into_lines().len == excerpt.original.split_into_lines().len
+	assert excerpt.annotated.contains('  %5 = unreachable t0  ; <<< stop mapped here. error[crash]: stop\\r\\nnew line\n')
 }
 
 fn test_debugger_parsers_keep_only_the_bundle_module_base() {

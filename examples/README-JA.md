@@ -86,11 +86,12 @@ SSA (original)
   %5770 = sdiv t2 %5768, %5769
 
 SSA (annotated)
-  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here
+  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here. error[crash]: WebAssembly trap: integer divide by zero
 ```
 
 両方のSSAは同じクラッシュレポートのディレクトリに保存されます。`run` に `--json` を付けると、
 ソース位置を `location` に、ファイルのパスを `ssa_original_file` と `ssa_file` に出力します。
+`--ssa` を付けると、注釈付きSSAを標準出力から直接保存できます。
 
 <details>
 <summary>停止箇所とSSA命令を見る</summary>

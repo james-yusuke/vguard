@@ -102,9 +102,10 @@ is available. The `^` marker points to the reported column, or `>` marks the lin
 a line number is known. Use `--json` for machine-readable output. Exit code 0 indicates
 success, 1 indicates a crash or a difference, and 2 indicates a tool error or an inconclusive result.
 
-For direct amd64, arm64, and WebAssembly builds, `run` prints the mapped SSA function twice.
-The annotated copy adds `<<<` to the instruction mapped to the stop. If the debugger found
-a V caller frame, the annotation identifies that frame. `run` also saves the pair in
+For direct amd64, arm64, and WebAssembly builds, `run` prints the mapped SSA function twice
+using the V compiler's SSA snapshot. The annotated copy puts the error reason on the mapped
+instruction line after `<<<`. If the debugger found a V caller frame, the annotation identifies
+that frame. `run` also saves the pair in
 `diagnostics/crash-…/` inside the build directory.
 
 | File | JSON field |
@@ -114,6 +115,14 @@ a V caller frame, the annotation identifies that frame. `run` also saves the pai
 
 Build the target with a V compiler that supports SSA snapshots. The JSON report includes
 an SSA read or write error in `ssa_error` when one occurs.
+
+Use `--ssa` to write the annotated V SSA to standard output. Diagnostic details are SSA
+comments. When no instruction can be mapped, the output contains the diagnostic comments
+alone. The target's output goes to standard error in this mode.
+
+```sh
+./vguard run ./guard-build/build.json --ssa > report.ssa
+```
 
 ### Trace native compilation
 

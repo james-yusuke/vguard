@@ -151,7 +151,7 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 		assert os.dir(diagnosis.ssa_original_file) == os.dir(diagnosis.ssa_file)
 		original := os.read_file(diagnosis.ssa_original_file) or { panic(err) }
 		ssa_report := os.read_file(diagnosis.ssa_file) or { panic(err) }
-		marker := '  ; <<< stop mapped here'
+		marker := '  ; <<< stop mapped here. error[crash]: ${diagnosis.reason}'
 		assert original.starts_with('fn "${example.function}"(')
 		assert !original.contains(marker)
 		assert ssa_report.contains('fn "${example.function}"(')
@@ -163,6 +163,7 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 		assert text.contains('^ stop mapped here')
 		assert text.contains('= SSA: %${location.ssa_value} sdiv')
 		assert text.contains('SSA (original)\n${original}\nSSA (annotated)\n')
+		assert bundle.format_ssa_diagnosis(diagnosis) == ssa_report
 	}
 }
 

@@ -12,7 +12,7 @@ const usage = 'VGuard traces V binary failures to their source.
                [--object | --hot-fn <symbol>] [--v-arg <arg>]...
   vguard resolve <build.json> (--address <va> | --pc <pc> --load-base <base> |
                 --offset <bytes> [--section <number>]) [--json]
-  vguard run <build.json> [--case <case.json>] [--json]
+  vguard run <build.json> [--case <case.json>] [--json | --ssa]
   vguard compare <build.json> [--case <case.json>] [--json]
 '
 
@@ -28,10 +28,10 @@ fn parse_options(command string, args []string) !Arguments {
 		'resolve' { ['--address', '--pc', '--load-base', '--offset', '--section'] }
 		else { ['--case'] }
 	}
-	boolean := if command == 'build' {
-		['--prod', '--object', '--memory', '--trace-build']
-	} else {
-		['--json']
+	boolean := match command {
+		'build' { ['--prod', '--object', '--memory', '--trace-build'] }
+		'run' { ['--json', '--ssa'] }
+		else { ['--json'] }
 	}
 	mut values := map[string]string{}
 	mut switches := map[string]bool{}
@@ -58,6 +58,9 @@ fn parse_options(command string, args []string) !Arguments {
 			values[option] = val
 		}
 		index += 2
+	}
+	if switches['--json'] && switches['--ssa'] {
+		return error('--json and --ssa are mutually exclusive')
 	}
 	return Arguments{
 		values:   values
@@ -196,6 +199,10 @@ fn cli(argv []string) !int {
 		report := bundle.run(scenario)!
 		if as_json {
 			println(json2.encode(report))
+		} else if opts.switches['--ssa'] {
+			eprint(report.outcome.stdout)
+			eprint(report.outcome.stderr)
+			print(bundle.format_ssa_diagnosis(report))
 		} else {
 			print(report.outcome.stdout)
 			if report.outcome.stdout != '' && !report.outcome.stdout.ends_with('\n') {
@@ -233,6 +240,8 @@ fn main() {
 				'kind':   'error'
 				'reason': err.msg()
 			}))
+		} else if args.len > 0 && args[0] == 'run' && '--ssa' in args {
+			println('; error[vguard]: ${ssa_comment_text(err.msg())}')
 		} else {
 			eprintln('error[vguard]: ${err.msg()}')
 		}

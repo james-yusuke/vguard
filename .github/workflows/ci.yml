@@ -193,7 +193,7 @@ jobs:
               original_ssa = Path(crash["ssa_original_file"])
               label = ("first mapped V caller frame" if crash["location"]["precision"] == "caller_frame"
                        else "stop mapped here")
-              marker = "  ; <<< " + label
+              marker = f"  ; <<< {label}. error[crash]: {crash['reason']}"
               annotated = ssa.read_text().split("\n\n", 1)[1]
               assert annotated.count(marker) == 1, ssa
               assert annotated.replace(marker, "") == original_ssa.read_text(), original_ssa

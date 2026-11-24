@@ -86,11 +86,12 @@ SSA (original)
   %5770 = sdiv t2 %5768, %5769
 
 SSA (annotated)
-  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here
+  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here. error[crash]: WebAssembly trap: integer divide by zero
 ```
 
 `run` saves both copies in the same crash report directory. Add `--json` to get the
 source location in `location` and the file paths in `ssa_original_file` and `ssa_file`.
+Use `--ssa` to save the annotated SSA directly from standard output.
 
 <details>
 <summary>Expected stops and SSA instructions</summary>

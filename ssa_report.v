@@ -9,6 +9,17 @@ struct SsaExcerpt {
 	annotated string
 }
 
+fn (report Diagnosis) crash_error() string {
+	reason := if report.reason == '' { 'program stopped unexpectedly' } else { report.reason }
+	return 'error[crash]: ${reason}'
+}
+
+fn ssa_comment_text(text string) string {
+	// Use the same escaping as SSA string operands to keep a diagnostic on one line.
+	quoted := json2.encode(text)
+	return quoted[1..quoted.len - 1]
+}
+
 fn (bundle &Bundle) with_crash_ssa(report Diagnosis) Diagnosis {
 	if report.kind != 'crash' {
 		return report
@@ -17,7 +28,7 @@ fn (bundle &Bundle) with_crash_ssa(report Diagnosis) Diagnosis {
 	if location.ssa_value < 0 || location.ssa_opcode == '' {
 		return report
 	}
-	excerpt := bundle.read_crash_ssa(location) or {
+	excerpt := bundle.read_crash_ssa(location, report.crash_error()) or {
 		return Diagnosis{
 			...report
 			ssa_error: err.msg()
@@ -38,7 +49,7 @@ fn (bundle &Bundle) with_crash_ssa(report Diagnosis) Diagnosis {
 	}
 }
 
-fn (bundle &Bundle) read_crash_ssa(location Location) !SsaExcerpt {
+fn (bundle &Bundle) read_crash_ssa(location Location, diagnostic string) !SsaExcerpt {
 	if bundle.ssa_sha256 == '' {
 		return error('build has no SSA snapshot; rebuild with a compiler that supports SSA snapshots')
 	}
@@ -46,7 +57,7 @@ fn (bundle &Bundle) read_crash_ssa(location Location) !SsaExcerpt {
 	if digest(data) != bundle.ssa_sha256 {
 		return error('SSA snapshot SHA-256 does not match the source map')
 	}
-	return crash_ssa_excerpt(data.bytestr(), location)
+	return crash_ssa_excerpt(data.bytestr(), location, diagnostic)
 }
 
 fn (bundle &Bundle) write_crash_ssa(report Diagnosis, location Location, excerpt SsaExcerpt) !(string, string) {
@@ -66,15 +77,35 @@ fn (bundle &Bundle) write_crash_ssa(report Diagnosis, location Location, excerpt
 	}
 	original_path := os.join_path(dir, 'original.ssa')
 	annotated_path := os.join_path(dir, 'crash.ssa')
-	header := '; VGuard crash SSA\n; Stop: ${json2.encode(report.reason)}\n' +
-		'; Stopped at: ${report.address}\n; V source: ${location_text(location)}\n\n'
 	os.write_file(original_path, excerpt.original)!
-	os.write_file(annotated_path, header + excerpt.annotated)!
+	os.write_file(annotated_path, format_crash_ssa(report, location, excerpt))!
 	saved = true
 	return original_path, annotated_path
 }
 
-fn crash_ssa_excerpt(snapshot string, location Location) !SsaExcerpt {
+fn format_crash_ssa(report Diagnosis, location Location, excerpt SsaExcerpt) string {
+	mut header := '; VGuard crash SSA\n; ${ssa_comment_text(report.crash_error())}\n'
+	if report.address != '' {
+		header += '; Stopped at: ${ssa_comment_text(report.address)}\n'
+	}
+	header += '; V source: ${ssa_comment_text(location_text(location))}\n'
+	if report.ssa_error != '' {
+		header += '; SSA report: ${ssa_comment_text(report.ssa_error)}\n'
+	}
+	return header + '\n' + excerpt.annotated
+}
+
+fn (bundle &Bundle) format_ssa_diagnosis(report Diagnosis) string {
+	if location := report.location {
+		if report.ssa_excerpt.annotated != '' {
+			return format_crash_ssa(report, location, report.ssa_excerpt)
+		}
+	}
+	// Preserve the available diagnosis as comments when there is no mapped IR.
+	return bundle.format_diagnosis(report).trim_right('\n').split('\n').map('; ${ssa_comment_text(it)}').join('\n') + '\n'
+}
+
+fn crash_ssa_excerpt(snapshot string, location Location, diagnostic string) !SsaExcerpt {
 	// ValueIDs are unique across the module and shared with the byte ranges.
 	prefix := '\n  %${location.ssa_value} = ${location.ssa_opcode} '
 	hit := snapshot.index(prefix) or { return error('mapped instruction is missing from the SSA snapshot') }
@@ -86,8 +117,9 @@ fn crash_ssa_excerpt(snapshot string, location Location) !SsaExcerpt {
 	} else {
 		'stop mapped here'
 	}
+	annotation := '  ; <<< ${label}. ${ssa_comment_text(diagnostic)}'
 	return SsaExcerpt{
 		original:  snapshot[start + 1..end + 3]
-		annotated: snapshot[start + 1..line_end] + '  ; <<< ${label}' + snapshot[line_end..end + 3]
+		annotated: snapshot[start + 1..line_end] + annotation + snapshot[line_end..end + 3]
 	}
 }

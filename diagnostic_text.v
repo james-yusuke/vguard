@@ -118,12 +118,7 @@ fn (bundle &Bundle) format_diagnosis(report Diagnosis) string {
 	} else {
 		match report.kind {
 			'crash' {
-				reason := if report.reason == '' {
-					'program stopped unexpectedly'
-				} else {
-					report.reason
-				}
-				out.writeln('error[crash]: ${reason}')
+				out.writeln(report.crash_error())
 			}
 			'exited' {
 				if report.outcome.exit_code == 0 {
