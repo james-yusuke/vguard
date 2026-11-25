@@ -158,9 +158,9 @@ jobs:
             build="$work/$example-build"
             report="$work/artifacts/$example.json"
             "$work/vguard" build "$source" --v "$target_v" --target "$VGUARD_TARGET" \
-              --backend "$VGUARD_BACKEND" --out "$build" --v-arg -gc --v-arg none
+              --backend "$VGUARD_BACKEND" --out "$build" --trace-ssa --v-arg -gc --v-arg none
             status=0
-            "$work/vguard" run "$build/build.json" --stack --json > "$report" || status=$?
+            "$work/vguard" run "$build/build.json" --dataflow --stack --json > "$report" || status=$?
             cat "$report"
             test "$status" -eq 1
           done
@@ -186,9 +186,16 @@ jobs:
               assert crash["kind"] == "crash" and "SIGABRT" in crash["reason"], crash
               assert crash["stack_trace"]["evidence"] == "debugger_at_stop", crash
               assert crash["stack_trace"]["text"], crash
+              assert any(thread["frames"] for thread in crash["stack_trace"]["threads"]), crash
               assert crash["location"]["file"].endswith("/" + source), crash
               assert crash["location"]["line"] == line, crash
               assert crash["location"]["ssa_opcode"] == "call", crash
+              flow = crash["ssa_dataflow"]
+              root = flow["nodes"][0]
+              assert root["id"] == flow["root"] == crash["location"]["ssa_value"], root
+              assert root["ast"]["kind"] == "call" and root["ast"]["line"] == line, root
+              ast = root["ast"]
+              assert Path(ast["source_file"]).read_bytes()[ast["start_byte"]:ast["end_byte"]] == b"C.abort()", ast
               if name == "deferred_validation":
                   assert crash["outcome"]["stdout"] == "Finished reading the batch.\n", crash
               ssa = Path(crash["ssa_file"])

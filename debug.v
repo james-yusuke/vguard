@@ -34,6 +34,7 @@ struct DebuggerStack {
 	debugger string
 	evidence string = 'debugger_at_stop'
 	text     string
+	threads  []DebuggerThread @[omitempty]
 }
 
 @[params]
@@ -228,7 +229,11 @@ fn debugger_stack(stdout string, marker string, debugger string) (string, ?Debug
 	if frames == '' {
 		return stdout[..offset], none
 	}
-	return stdout[..offset], DebuggerStack{ debugger: debugger, text: frames }
+	return stdout[..offset], DebuggerStack{
+		debugger: debugger
+		text:     frames
+		threads:  parse_debugger_threads(frames)
+	}
 }
 
 fn parse_lldb(output string, artifact string) NativeStop {

@@ -156,7 +156,7 @@ observe the production SSA optimizer.
 ```sh
 ./vguard build examples/crashes/rounded_divisor.v --v ../v/v-vguard \
   --backend wasm --target wasm32_emscripten/wasm32 --prod --trace-ssa --out ./ssa-analysis
-./vguard run ./ssa-analysis/build.json --dataflow --json
+./vguard run ./ssa-analysis/build.json --dataflow
 ```
 
 The build directory contains `program.vgmap.json.passes.jsonl` and
@@ -167,15 +167,29 @@ retain the compiler's critical and advisory classification and the checkpoint
 records whether verification ran. A skipped optimizer still emits a graph and
 records the reason. The manifest stores checksums for both files.
 
+The pass log and final graph include an optional `ast` field for instructions
+with a recorded origin in the lowered AST used to build SSA. It includes the
+node ID and kind, the reported file, line and column, and a half-open byte range
+in `source_file`. The reported file can differ from the source file when a
+`#line` directive applies. Node IDs are local to the compilation. When the
+inliner copies an instruction with a recorded origin, `copied_from` gives the
+original SSA value ID. Instructions generated without a recorded origin omit
+`ast`.
+
 `run --dataflow` follows SSA operands, phi inputs, lowered phi copies, and
 predecessor branches from the mapped stop. Results in `ssa_dataflow` describe
-static candidates. There is no runtime branch witness or memory alias resolution
-in this report. The walk examines at most 128 instructions and reports truncation.
+static candidates. The terminal report shows the mapped instruction's AST origin
+when available. Add `--json` to inspect the AST origins of upstream instructions
+as well. The walk examines at most 128 instructions and reports truncation.
+Runtime branch selection and memory aliasing are outside this analysis.
 
 `run --stack` captures the native debugger's all-thread backtrace at a fatal stop.
 The `stack_trace` field includes debugger output with the frames, arguments, and
 source locations it could recover. Argument and source information depend on the
-binary's debug metadata. Wasm and sanitizer reports can use their existing
+binary's debug metadata. The optional `threads` array groups recognized frames
+by debugger thread number. Frame arguments are preserved as debugger text, and
+source file, line, and column are reported when printed by the debugger.
+Wasm and sanitizer reports can use their existing
 stack information.
 
 Compare two existing build manifests with `compare --reference other/build.json`
@@ -204,16 +218,32 @@ are 0 for `unchanged`, 1 for `changed`, and 2 for `inconclusive` or an error.
 
 `record <build.json> --out <new-directory>` records scalar assignments, branches,
 and returns from a standalone program with a successful, matching baseline.
+`record --calls` also records named V function entries in the instrumented source
+file or the top-level source files of the build directory. Update the compiler
+patch and rebuild the compiler and target before using this option.
 `replay <new-directory>/history.json` reads those recorded events offline in order.
 Use the existing `--case` option with `record` to select inputs.
+
+`minimize` tries line deletions in a copy of a common, single V source file.
+It requires two existing builds whose compiler and source fingerprints still match
+their manifests and whose successful outputs are repeatable and different.
+
+```sh
+./vguard minimize ./candidate/build.json --reference ./baseline/build.json \
+  --case ./case.json --out ./reduced --attempts 32
+```
+
+The output directory contains the reduced `.v` file and `reduction.json`.
+Both configurations are rebuilt and run twice to verify the final result.
+`single_line_deletions_checked` indicates whether the search checked all single-line
+deletions in its final candidate. A nonzero exit or runtime interruption stops reduction.
 
 Run `python3 benchmarks/ssa_trace.py --help` for the build-time benchmark. It
 measures elapsed time, trace size, and equality of emitted binary bytes.
 
 The current diagnostics cover the SSA pipeline and selected runtime observations.
 CPU register and stack-slot mappings, native Shadow Memory, instruction-level
-memory replay, deadlock classification, and automatic repro reduction remain outside
-this implementation.
+memory replay, and deadlock classification remain outside this implementation.
 
 ### WebAssembly execution limits
 

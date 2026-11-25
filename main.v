@@ -16,7 +16,9 @@ const usage = 'VGuard traces V binary failures to their source.
   vguard run <build.json> [--case <case.json>] [--json | --ssa] [--dataflow] [--stack] [--fuel <units>]
   vguard compare <build.json> [--reference <build.json>] [--case <case.json>] [--json]
   vguard regress <series.json> [--case <case.json>] [--json]
-  vguard record <build.json> [--case <case.json>] --out <new-directory>
+  vguard minimize <build.json> --reference <build.json> --out <new-directory>
+                  [--case <case.json>] [--attempts <count>]
+  vguard record <build.json> [--case <case.json>] [--calls] --out <new-directory>
   vguard replay <history.json> [--json]
 '
 
@@ -31,6 +33,7 @@ fn parse_options(command string, args []string) !Arguments {
 		'build' { ['--v', '--backend', '--target', '--out', '--hot-fn', '--v-arg'] }
 		'resolve' { ['--address', '--pc', '--load-base', '--offset', '--section'] }
 		'compare' { ['--case', '--reference'] }
+		'minimize' { ['--case', '--reference', '--out', '--attempts'] }
 		'run' { ['--case', '--fuel'] }
 		'record' { ['--case', '--out'] }
 		'replay' { []string{} }
@@ -39,7 +42,8 @@ fn parse_options(command string, args []string) !Arguments {
 	boolean := match command {
 		'build' { ['--prod', '--object', '--memory', '--trace-build', '--trace-ssa'] }
 		'run' { ['--json', '--ssa', '--dataflow', '--stack'] }
-		'record' { []string{} }
+		'record' { ['--calls'] }
+		'minimize' { []string{} }
 		else { ['--json'] }
 	}
 	mut values := map[string]string{}
@@ -59,7 +63,8 @@ fn parse_options(command string, args []string) !Arguments {
 		val := args[index + 1]
 		if option == '--v-arg' {
 			if val in ['-b', '-os', '-arch', '-o', '-output', '-prod', '-vguard-map', '-vguard-trace',
-				'-vguard-ssa-analysis', '-is_o', '-hot-fn', 'run', 'test', 'self'] {
+				'-vguard-ssa-analysis', '-vguard-trace-calls', '-is_o', '-hot-fn', 'run', 'test',
+				'self'] {
 				return error('use the VGuard build options instead of --v-arg ${val}')
 			}
 			v_args << val
@@ -170,7 +175,8 @@ fn cli(argv []string) !int {
 		print(usage)
 		return 0
 	}
-	if argv.len < 2 || argv[0] !in ['build', 'resolve', 'run', 'compare', 'record', 'replay', 'regress'] {
+	if argv.len < 2 || argv[0] !in ['build', 'resolve', 'run', 'compare', 'record', 'replay', 'regress',
+		'minimize'] {
 		return error(invalid_command)
 	}
 	command := argv[0]
@@ -231,8 +237,20 @@ fn cli(argv []string) !int {
 		return 0
 	}
 	scenario := load_case(opts.values['--case'])!
+	if command == 'minimize' {
+		reference := open_bundle(opts.require('--reference')!)!
+		attempts := if '--attempts' in opts.values {
+			strconv.atoi(opts.require('--attempts')!) or { return error('--attempts expects a positive integer') }
+		} else {
+			32
+		}
+		println(minimize_output_difference(bundle, reference, scenario, os.abs_path(opts.require('--out')!), attempts)!)
+		return 0
+	}
 	if command == 'record' {
-		println(record_history(bundle, scenario, os.abs_path(opts.require('--out')!))!)
+		println(record_history(bundle, scenario, os.abs_path(opts.require('--out')!),
+			calls: opts.switches['--calls']
+		)!)
 		return 0
 	}
 	if command == 'run' {

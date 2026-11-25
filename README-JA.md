@@ -131,7 +131,7 @@ JSONには、Vが `-show-timings` で報告した順に工程を記録します�
 ```sh
 ./vguard build examples/crashes/rounded_divisor.v --v ../v/v-vguard \
   --backend wasm --target wasm32_emscripten/wasm32 --prod --trace-ssa --out ./ssa-analysis
-./vguard run ./ssa-analysis/build.json --dataflow --json
+./vguard run ./ssa-analysis/build.json --dataflow
 ```
 
 `program.vgmap.json.passes.jsonl` には初期状態と、各チェックポイント間で追加・変更・削除された
@@ -140,12 +140,20 @@ Verifierを実行した地点と所見の重要度も記録します。最適化
 その時点のSSAグラフを保存します。グラフは `program.vgmap.json.passes.jsonl.graph.json` にあり、
 マニフェストには両ファイルのチェックサムが入ります。
 
+SSA構築時に変換後のASTノードを記録できた命令には、パスログと最終グラフに `ast` が付きます。
+ノードのIDと種類、診断に使うファイル・行・列、`source_file` 上の半開バイト範囲を示します。
+`#line` がある場合、診断上のファイルと実際のソースファイルは異なることがあります。
+ノードIDはビルド内で有効です。インライン化で由来を記録した命令を複製した場合は、
+`copied_from` が複製元のSSA Value IDを示します。由来を記録していない命令は `ast` を省略します。
+
 `run --dataflow` は停止位置に対応したSSA命令から、定義、φ関数の入力、φの展開で生成された
 コピー、先行ブロックの分岐を逆向きにたどります。`ssa_dataflow` は静的な候補を表します。
+端末では停止位置に対応したASTを表示します。`--json` を付けると依存先の命令のASTも確認できます。
 探索は128命令までで、上限に達した場合はその旨を報告します。メモリの別名と実際に通過した分岐はこの解析の対象外です。
 
 `run --stack` は、ネイティブの停止時点でデバッガーが取得した全スレッドのバックトレースを
-`stack_trace` に含めます。取得できる引数やソース位置はデバッグ情報に依存します。
+`stack_trace` に含めます。`threads` には、認識できたフレームをデバッガーのスレッド番号で整理して出力します。
+引数はデバッガーの表示文字列を保持します。ファイル・行・列はデバッガーが報告した場合に含まれます。
 
 `compare --reference other/build.json` は、二つのビルドを同じケースで実行します。
 ビルド情報と、標準出力・標準エラーで最初に異なるバイトを報告します。同じソースと
@@ -170,14 +178,27 @@ Verifierを実行した地点と所見の重要度も記録します。最適化
 
 `record <build.json> --out <new-directory>` は、正常終了したスタンドアロン実行の
 スカラー代入・分岐・戻り値を記録します。計測を付けた実行の出力と終了状態も照合します。
+`record --calls` を付けると、指定したVファイルまたはプロジェクト直下のVファイルに定義された名前付き関数への進入も記録します。
+このオプションには更新したパッチで再ビルドしたコンパイラとビルドが必要です。
 `replay <new-directory>/history.json` は、その記録を順に表示します。入力の指定には
 `record` の `--case` を使えます。
+
+`minimize` は、同じ単一のVファイルから作った二つのビルドで正常終了時の出力差が再現する場合に、
+コピー上で行を削って再現ソースを縮小します。両方のコンパイラとソースの指紋が必要です。
+
+```sh
+./vguard minimize ./candidate/build.json --reference ./baseline/build.json \
+  --case ./case.json --out ./reduced --attempts 32
+```
+
+縮小したVファイルと `reduction.json` を保存します。最終候補は両方の設定で再ビルドし、各2回実行して元と同じ出力になることを確認します。
+`single_line_deletions_checked` は最終候補から一行ずつ削る試行を完了したかを示します。非ゼロ終了や実行の中断が起きた場合は縮小を止めます。
 
 ビルド時間、追跡ファイルのサイズ、バイナリのバイト一致を計測するベンチマークは
 `python3 benchmarks/ssa_trace.py --help` で実行方法を確認できます。
 
 CPUレジスタ・スタックスロットの対応、ネイティブのShadow Memory、メモリアクセス単位の再生、
-デッドロック判定、再現コードの最小化は未実装です。
+デッドロック判定は未実装です。
 
 ### WebAssemblyの実行上限
 

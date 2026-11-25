@@ -1,5 +1,7 @@
 module main
 
+import json2
+
 fn test_backward_ssa_reports_phi_candidates_and_branch_conditions() {
 	graph := SsaGraph{
 		version:      1
@@ -39,6 +41,7 @@ fn test_backward_ssa_reports_phi_candidates_and_branch_conditions() {
 	assert trace.edges.any(it.kind == 'predecessor_branch' && it.from == 12 && it.to == 10)
 	assert trace.edges.any(it.kind == 'operand' && it.from == 10 && it.to == 3)
 	assert !trace.truncated
+	assert !json2.encode(trace).contains('"ast"')
 }
 
 fn test_debugger_stack_keeps_other_threads_out_of_primary_backtrace_parsing() {
@@ -47,5 +50,34 @@ fn test_debugger_stack_keeps_other_threads_out_of_primary_backtrace_parsing() {
 	stack := recorded or { panic('missing stack') }
 	assert stack.debugger == 'gdb'
 	assert stack.text.contains('Thread 2')
+	assert stack.threads.len == 1
+	assert stack.threads[0].number == 2
+	assert stack.threads[0].frames.map(it.index) == [0, 1]
 	assert parse_gdb(primary, '/tmp/program').pcs == [u64(0x150), 0x180]
+}
+
+fn test_debugger_frames_retain_visible_arguments_and_source_positions() {
+	trace := '* thread #1, queue = main, stop reason = signal SIGABRT\n' +
+		'  * frame #0: 0x00001200 demo\x60worker(n=42) at /tmp/source file.v:7:3 [opt]\n' +
+		'  thread #2\n  frame #0: 0x00001500 lib\x60wait\n'
+	threads := parse_debugger_threads(trace)
+	assert threads.map(it.number) == [1, 2]
+	assert threads[0].selected
+	frame := threads[0].frames[0]
+	assert frame.address == '0x00001200'
+	assert frame.arguments == 'n=42'
+	source := frame.source or { panic('missing debugger source position') }
+	assert source.file == '/tmp/source file.v'
+	assert source.line == 7
+	assert source.column == 3
+	assert threads[1].frames[0].source == none
+	frame_without_pc := parse_debugger_frame(r'#0 main (n=<optimized out>) at C:\work\sample.v:12') or {
+		panic('missing frame')
+	}
+	assert frame_without_pc.address == ''
+	assert frame_without_pc.arguments == 'n=<optimized out>'
+	file := frame_without_pc.source or { panic('missing source') }
+	assert file.file == r'C:\work\sample.v'
+	assert file.line == 12
+	assert file.column == 0
 }

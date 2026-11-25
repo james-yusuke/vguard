@@ -1,5 +1,5 @@
 diff --git a/vlib/v/driver/driver.v b/vlib/v/driver/driver.v
-index 0304994c77..fe10716156 100644
+index 0304994c77..9c97d5ac7d 100644
 --- a/vlib/v/driver/driver.v
 +++ b/vlib/v/driver/driver.v
 @@ -4593,7 +4593,7 @@ fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, us
@@ -7,7 +7,7 @@ index 0304994c77..fe10716156 100644
  
  fn cli_usage() string {
 -	return 'usage: v3 [run|crun|test] <file.v|directory> [options]\n' + '  -o <output>                  output binary or C file\n' + '  -b <c|fastc|native|arm64|amd64|x64|wasm|eval> backend\n' + '  -native                      native backend for the target architecture\n' + '  -os <name> -arch <name>      target platform\n' + '  -cc <compiler>               C compiler executable\n' + '  -cflags <flags>              extra C compiler options\n' + '  -ldflags <flags>             extra options appended to the link command\n' + '  -syscalls                    libc-linked build with os on raw syscalls (C backend)\n' + '  -thread-stack-size <bytes>   spawned-thread stack size\n' + '  -hot-fn <name>              extract raw machine code for one function (hot reload, arm64)\n' + '  -prod -c99 -shared -strict   C build modes\n' + '  -v                           verbose stage profiling\n' + '  -show-timings                compiler stage timings without verbose traces\n' + '  -show-instructions           -show-timings plus retired CPU instructions per stage (macOS)\n' + '  -silent                      suppress benchmark output\n' + '  -showcc                      print C compiler commands\n' + '  -trace-calls                 trace function entries to stderr\n' + '  -trace-fns <patterns>        restrict tracing to functions or modules\n' + '  -race                        detect data races at runtime (ThreadSanitizer)\n' + '  -profile [file]              write V1-compatible function profile data\n' + '  -profile-fns <names>         profile only named functions and their callees\n' + '  -profile-no-inline           omit @[inline] functions from the profile\n' + '  -no-memory-limit             disable the 10176 MiB user-build memory safety limit\n' + '  -memory-limit <size>         set a custom user-build memory safety limit\n                               to specify unit append K|M|G (or k|m|g) (default: M)\n' + '  -d <name>                    compile-time define'
-+	return 'usage: v3 [run|crun|test] <file.v|directory> [options]\n' + '  -o <output>                  output binary or C file\n' + '  -b <c|fastc|native|arm64|amd64|x64|wasm|eval> backend\n' + '  -native                      native backend for the target architecture\n' + '  -os <name> -arch <name>      target platform\n' + '  -cc <compiler>               C compiler executable\n' + '  -cflags <flags>              extra C compiler options\n' + '  -ldflags <flags>             extra options appended to the link command\n' + '  -syscalls                    libc-linked build with os on raw syscalls (C backend)\n' + '  -thread-stack-size <bytes>   spawned-thread stack size\n' + '  -hot-fn <name>              extract raw machine code for one function (hot reload, arm64)\n' + '  -vguard-map <file>           record a VGuard binary source map\n  -vguard-trace                instrument scalar values for VGuard\n  -vguard-ssa-analysis         save optimization and dataflow reports with -vguard-map\n  -prod -c99 -shared -strict   C build modes\n' + '  -v                           verbose stage profiling\n' + '  -show-timings                compiler stage timings without verbose traces\n' + '  -show-instructions           -show-timings plus retired CPU instructions per stage (macOS)\n' + '  -silent                      suppress benchmark output\n' + '  -showcc                      print C compiler commands\n' + '  -trace-calls                 trace function entries to stderr\n' + '  -trace-fns <patterns>        restrict tracing to functions or modules\n' + '  -race                        detect data races at runtime (ThreadSanitizer)\n' + '  -profile [file]              write V1-compatible function profile data\n' + '  -profile-fns <names>         profile only named functions and their callees\n' + '  -profile-no-inline           omit @[inline] functions from the profile\n' + '  -no-memory-limit             disable the 10176 MiB user-build memory safety limit\n' + '  -memory-limit <size>         set a custom user-build memory safety limit\n                               to specify unit append K|M|G (or k|m|g) (default: M)\n' + '  -d <name>                    compile-time define'
++	return 'usage: v3 [run|crun|test] <file.v|directory> [options]\n' + '  -o <output>                  output binary or C file\n' + '  -b <c|fastc|native|arm64|amd64|x64|wasm|eval> backend\n' + '  -native                      native backend for the target architecture\n' + '  -os <name> -arch <name>      target platform\n' + '  -cc <compiler>               C compiler executable\n' + '  -cflags <flags>              extra C compiler options\n' + '  -ldflags <flags>             extra options appended to the link command\n' + '  -syscalls                    libc-linked build with os on raw syscalls (C backend)\n' + '  -thread-stack-size <bytes>   spawned-thread stack size\n' + '  -hot-fn <name>              extract raw machine code for one function (hot reload, arm64)\n' + '  -vguard-map <file>           record a VGuard binary source map\n  -vguard-trace                instrument scalar values for VGuard\n  -vguard-trace-calls          add function entry events to VGuard scalar tracing\n  -vguard-ssa-analysis         save optimization and dataflow reports with -vguard-map\n  -prod -c99 -shared -strict   C build modes\n' + '  -v                           verbose stage profiling\n' + '  -show-timings                compiler stage timings without verbose traces\n' + '  -show-instructions           -show-timings plus retired CPU instructions per stage (macOS)\n' + '  -silent                      suppress benchmark output\n' + '  -showcc                      print C compiler commands\n' + '  -trace-calls                 trace function entries to stderr\n' + '  -trace-fns <patterns>        restrict tracing to functions or modules\n' + '  -race                        detect data races at runtime (ThreadSanitizer)\n' + '  -profile [file]              write V1-compatible function profile data\n' + '  -profile-fns <names>         profile only named functions and their callees\n' + '  -profile-no-inline           omit @[inline] functions from the profile\n' + '  -no-memory-limit             disable the 10176 MiB user-build memory safety limit\n' + '  -memory-limit <size>         set a custom user-build memory safety limit\n                               to specify unit append K|M|G (or k|m|g) (default: M)\n' + '  -d <name>                    compile-time define'
  }
  
  fn normalize_backend_name(name string) string {
@@ -33,22 +33,26 @@ index 0304994c77..fe10716156 100644
  		os.mv(staged, bin_file) or { return V3FastCCompileResult{ command: command, output: err.msg() } }
  		return V3FastCCompileResult{ success: true, command: command, output: output }
  	}
-@@ -10142,6 +10148,9 @@ pub fn run(args []string) {
+@@ -10142,6 +10148,10 @@ pub fn run(args []string) {
  	mut skip_running := false
  	mut is_debug := false
  	mut is_c_debug := false
 +	mut vguard_ssa_analysis := false
 +	mut vguard_map_path := ''
 +	mut vguard_trace := false
++	mut vguard_trace_calls := false
  	mut c99 := false
  	mut c99_explicit := false
  	mut thread_stack_size := 0
-@@ -10549,6 +10558,17 @@ pub fn run(args []string) {
+@@ -10549,6 +10559,20 @@ pub fn run(args []string) {
  			}
  			user_ld_flags << parsed_ld_flags
  			i += 2
 +		} else if args[i] == '-vguard-ssa-analysis' {
 +			vguard_ssa_analysis = true
++			i++
++		} else if args[i] == '-vguard-trace-calls' {
++			vguard_trace_calls = true
 +			i++
 +		} else if args[i] == '-vguard-trace' {
 +			vguard_trace = true
@@ -61,7 +65,7 @@ index 0304994c77..fe10716156 100644
  		} else if args[i] in ['-g', '-cg', '-cdebug'] {
  			is_debug = true
  			if args[i] in ['-cg', '-cdebug'] {
-@@ -10999,6 +11019,33 @@ pub fn run(args []string) {
+@@ -10999,6 +11023,33 @@ pub fn run(args []string) {
  	if os.getenv(v3_embedded_env) != '1' {
  		maybe_delegate_v3_to_vvmrc(input_file, verbose)
  	}
@@ -95,16 +99,20 @@ index 0304994c77..fe10716156 100644
  	// JS and FastC dispatch before the common runtime-injection validation below.
  	if 'vlibc' in user_defines && backend != 'c' {
  		eprintln('`-d vlibc` requires the C backend and a supported Unix amd64/arm64 target')
-@@ -11647,6 +11694,26 @@ pub fn run(args []string) {
+@@ -11647,6 +11698,30 @@ pub fn run(args []string) {
  	if verbose {
  		eprintln('v.pref.lookup_path: ${os.join_path(prefs.vroot, 'vlib')}')
  	}
++	if vguard_trace_calls && !vguard_trace {
++		eprintln('-vguard-trace-calls requires -vguard-trace')
++		exit(1)
++	}
 +	trace_input, trace_root := if vguard_trace {
 +		if vguard_map_path == '' {
 +			eprintln('-vguard-trace requires -vguard-map')
 +			exit(1)
 +		}
-+		stage_vguard_trace(input_file, prefs) or {
++		stage_vguard_trace(input_file, prefs, vguard_trace_calls) or {
 +			eprintln(err)
 +			exit(1)
 +			return
@@ -122,7 +130,7 @@ index 0304994c77..fe10716156 100644
  	prefs.supports_inline_asm = is_checker_fixture || (backend == 'fastc' && c_only
  		&& target.arch in ['amd64', 'arm64'])
  	if backend == 'fastc' {
-@@ -11699,8 +11766,8 @@ pub fn run(args []string) {
+@@ -11699,8 +11774,8 @@ pub fn run(args []string) {
  			if is_shared || is_livemain || is_liveshared {
  				unsupported_modes << 'shared/live builds'
  			}
@@ -133,7 +141,7 @@ index 0304994c77..fe10716156 100644
  			}
  			if is_prof || coverage_dir.len > 0 {
  				unsupported_modes << 'profiling/coverage'
-@@ -11854,6 +11921,27 @@ pub fn run(args []string) {
+@@ -11854,6 +11929,27 @@ pub fn run(args []string) {
  				clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  				return
  			}
@@ -161,7 +169,7 @@ index 0304994c77..fe10716156 100644
  			fastc_bin_file := bin_file
  			fastc_sdk_root := if prefs.normalized_target_os() == 'macos' {
  				macos_sdk_root_cache.get()
-@@ -11921,6 +12009,12 @@ pub fn run(args []string) {
+@@ -11921,6 +12017,12 @@ pub fn run(args []string) {
  				eprintln('fastc-bench-total: files=${fastc_generation.source_paths.len} lines=${total_lines} total=${f64(total_us) / 1000.0:.2f}ms throughput=${mloc_per_s:.3f} MLOC/s (includes TinyCC)')
  			}
  			b.step('tcc')
@@ -174,21 +182,22 @@ index 0304994c77..fe10716156 100644
  			b.metric('generated C size', fastc_generation.c_size(), 'bytes')
  			if retain_backend_c {
  				fastc.write_c_pieces(output_file, fastc_generation.c_pieces) or {
-@@ -14825,6 +14919,7 @@ pub fn run(args []string) {
+@@ -14825,6 +14927,8 @@ pub fn run(args []string) {
  				exit(1)
  			}
  			mut m := ssa.build_with_options(a, config.used_fns, pre_tc, ssa.BuildOptions{
-+				vguard_enabled: vguard_map_path != ''
++				vguard_enabled:   vguard_map_path != ''
++				vguard_track_ast: vguard_ssa_analysis
  				target:         ssa.TargetData{ ptr_size: 4 }
  				track_uses:     is_prod
  				exact_used_fns: true
-@@ -14832,8 +14927,17 @@ pub fn run(args []string) {
+@@ -14832,8 +14936,17 @@ pub fn run(args []string) {
  				source_imports: config.source_imports
  			})
  			b.step('ssa build')
 +			if vguard_ssa_analysis {
 +				skip_reason := if is_prod { '' } else { 'not_requested' }
-+				run_vguard_ssa_analysis(mut m, vguard_map_path, output_file, skip_reason) or {
++				run_vguard_ssa_analysis(mut m, a, vguard_map_path, output_file, skip_reason) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -201,7 +210,7 @@ index 0304994c77..fe10716156 100644
  				b.step('optimize')
  			}
  			m.release_codegen_analysis_metadata()
-@@ -14860,6 +14964,12 @@ pub fn run(args []string) {
+@@ -14860,6 +14973,12 @@ pub fn run(args []string) {
  				eprintln('error writing ${output_file}')
  				exit(1)
  			}
@@ -214,15 +223,16 @@ index 0304994c77..fe10716156 100644
  			for warning in g.warnings_list() {
  				eprintln('wasm: ${warning}')
  			}
-@@ -14880,6 +14990,7 @@ pub fn run(args []string) {
+@@ -14880,6 +14999,8 @@ pub fn run(args []string) {
  		}
  		$if !skip_amd64 ?&& !skip_x64 ? {
  			mut m := ssa.build_with_options(a, used_fns, pre_tc, ssa.BuildOptions{
-+				vguard_enabled: vguard_map_path != ''
++				vguard_enabled:   vguard_map_path != ''
++				vguard_track_ast: vguard_ssa_analysis
  				// The optimizer rebuilds use lists once before consuming them.
  				// Incremental tracking is quadratic for large generic functions.
  				track_uses:           false
-@@ -14906,8 +15017,23 @@ pub fn run(args []string) {
+@@ -14906,8 +15027,23 @@ pub fn run(args []string) {
  			b.metric('SSA blocks before optimize', m.blocks.len, 'blocks')
  
  			run_ssa_optimizer := is_prod && m.values.len <= amd64_prod_ssa_optimizer_max_values
@@ -234,7 +244,7 @@ index 0304994c77..fe10716156 100644
 +				} else {
 +					'not_requested'
 +				}
-+				run_vguard_ssa_analysis(mut m, vguard_map_path, bin_file, skip_reason) or {
++				run_vguard_ssa_analysis(mut m, a, vguard_map_path, bin_file, skip_reason) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -247,7 +257,7 @@ index 0304994c77..fe10716156 100644
  				b.step('optimize')
  			} else if is_prod && verbose {
  				eprintln('amd64: skipping global SSA optimizer for ${m.values.len} values to bound compiler memory')
-@@ -14935,6 +15061,12 @@ pub fn run(args []string) {
+@@ -14935,6 +15071,12 @@ pub fn run(args []string) {
  					eprintln('amd64 ELF object output failed: ${err}')
  					exit(1)
  				}
@@ -260,7 +270,7 @@ index 0304994c77..fe10716156 100644
  				b.print_report()
  				return
  			}
-@@ -14988,6 +15120,12 @@ pub fn run(args []string) {
+@@ -14988,6 +15130,12 @@ pub fn run(args []string) {
  				eprintln('amd64 link failed with `${linker}`')
  				exit(1)
  			}
@@ -273,21 +283,22 @@ index 0304994c77..fe10716156 100644
  			b.step('link')
  			clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  			if should_run {
-@@ -15115,6 +15253,7 @@ pub fn run(args []string) {
+@@ -15115,6 +15263,8 @@ pub fn run(args []string) {
  			}
  			// SSA + ARM64 native backend
  			mut m := ssa.build_with_options(a, used_fns, pre_tc, ssa.BuildOptions{
 +				vguard_enabled:       vguard_map_path != ''
++				vguard_track_ast:     vguard_ssa_analysis
  				track_uses:           false // optimize() rebuilds them
  				thread_stack_size:    prefs.thread_stack_size
  				test_files:           test_files
-@@ -15142,8 +15281,17 @@ pub fn run(args []string) {
+@@ -15142,8 +15292,17 @@ pub fn run(args []string) {
  			b.metric('SSA instructions before optimize', m.instrs.len, 'instructions')
  			b.metric('SSA blocks before optimize', m.blocks.len, 'blocks')
  
 +			if vguard_ssa_analysis {
 +				skip_reason := if is_prod { '' } else { 'not_requested' }
-+				run_vguard_ssa_analysis(mut m, vguard_map_path, bin_file, skip_reason) or {
++				run_vguard_ssa_analysis(mut m, a, vguard_map_path, bin_file, skip_reason) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -300,7 +311,7 @@ index 0304994c77..fe10716156 100644
  				b.step('optimize')
  				b.metric('SSA values after optimize', m.values.len, 'values')
  				b.metric('SSA instructions after optimize', m.instrs.len, 'instructions')
-@@ -15177,6 +15325,12 @@ pub fn run(args []string) {
+@@ -15177,6 +15336,12 @@ pub fn run(args []string) {
  					exit(1)
  				}
  				os.write_file_array(bin_file, code) or { panic(err) }
@@ -313,7 +324,7 @@ index 0304994c77..fe10716156 100644
  				println('hot-fn: wrote ${code.len} bytes for "${prefs.hot_fn}" to ${bin_file}')
  				return
  			}
-@@ -15260,6 +15414,12 @@ pub fn run(args []string) {
+@@ -15260,6 +15425,12 @@ pub fn run(args []string) {
  			} else {
  				g.write_and_link(bin_file)
  			}
@@ -326,7 +337,7 @@ index 0304994c77..fe10716156 100644
  			b.step('link')
  			clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  			if should_run {
-@@ -15335,8 +15495,13 @@ pub fn run(args []string) {
+@@ -15335,8 +15506,13 @@ pub fn run(args []string) {
  		mut cc_dir_moved := false
  		mut cc_src := output_file
  		mut cc_out := ''
@@ -342,7 +353,7 @@ index 0304994c77..fe10716156 100644
  		if !c_only {
  			cc_dir = os.join_path_single(v3_output_dir(bin_file), '.${os.base(bin_file)}.v3cc.${tempname.unique_token()}')
  			// tcc.exe is not long-path aware, so a build dir near MAX_PATH cannot hold its files.
-@@ -15452,7 +15617,7 @@ pub fn run(args []string) {
+@@ -15452,7 +15628,7 @@ pub fn run(args []string) {
  			g.set_prod(prefs.is_prod)
  			g.set_debug(prefs.is_debug)
  			g.set_race(race)
@@ -351,7 +362,7 @@ index 0304994c77..fe10716156 100644
  			g.set_check_overflow(check_overflow)
  			g.set_check_casts(check_casts)
  			g.set_check_scope_vroot(prefs.vroot)
-@@ -15566,7 +15731,7 @@ pub fn run(args []string) {
+@@ -15566,7 +15742,7 @@ pub fn run(args []string) {
  			g.set_prod(prefs.is_prod)
  			g.set_debug(prefs.is_debug)
  			g.set_race(race)
@@ -360,7 +371,7 @@ index 0304994c77..fe10716156 100644
  			g.set_check_overflow(check_overflow)
  			g.set_check_casts(check_casts)
  			g.set_check_scope_vroot(prefs.vroot)
-@@ -17119,6 +17284,12 @@ Please install the corresponding development package/libraries and make sure the
+@@ -17119,6 +17295,12 @@ Please install the corresponding development package/libraries and make sure the
  		clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  		// The C compiler is done. What was set up for `cl` must not reach the program that runs next.
  		msvc_restore_environment(msvc_saved_environment)
@@ -439,7 +450,7 @@ index 0000000000..546fa27c14
 +}
 diff --git a/vlib/v/driver/vguard_map_notd_skip_ssa.v b/vlib/v/driver/vguard_map_notd_skip_ssa.v
 new file mode 100644
-index 0000000000..54eda2e6cc
+index 0000000000..acedcef345
 --- /dev/null
 +++ b/vlib/v/driver/vguard_map_notd_skip_ssa.v
 @@ -0,0 +1,74 @@
@@ -509,20 +520,20 @@ index 0000000000..54eda2e6cc
 +	return result
 +}
 +
-+fn run_vguard_ssa_analysis(mut m ssa.Module, map_path string, artifact string, skip_reason string) ! {
++fn run_vguard_ssa_analysis(mut m ssa.Module, a &flat.FlatAst, map_path string, artifact string, skip_reason string) ! {
 +	path := map_path + '.passes.jsonl'
 +	output := os.real_path(artifact)
 +	if output in [os.real_path(path), os.real_path(path + '.graph.json')] {
 +		return error('VGuard SSA analysis path aliases the binary')
 +	}
-+	optimize.trace_vguard_pipeline(mut m, path, skip_reason)!
++	optimize.trace_vguard_pipeline(mut m, a, path, skip_reason)!
 +}
 diff --git a/vlib/v/driver/vguard_trace.v b/vlib/v/driver/vguard_trace.v
 new file mode 100644
-index 0000000000..c2fbbc07d9
+index 0000000000..7851359689
 --- /dev/null
 +++ b/vlib/v/driver/vguard_trace.v
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,207 @@
 +module driver
 +
 +import crypto.sha256
@@ -539,7 +550,7 @@ index 0000000000..c2fbbc07d9
 +	text   string
 +}
 +
-+fn stage_vguard_trace(input string, prefs &pref.Preferences) !(string, string) {
++fn stage_vguard_trace(input string, prefs &pref.Preferences, calls bool) !(string, string) {
 +	root := os.join_path(os.vtmp_dir(), 'vguard-trace-' + tempname.unique_token())
 +	os.mkdir(root)!
 +	mut success := false
@@ -550,18 +561,18 @@ index 0000000000..c2fbbc07d9
 +	}
 +	staged := os.join_path(root, os.file_name(os.real_path(input)))
 +	if os.is_dir(input) {
-+		vguard_trace_dir(os.real_path(input), staged, prefs)!
++		vguard_trace_dir(os.real_path(input), staged, prefs, calls)!
 +	} else {
 +		if !input.ends_with('.v') {
 +			return error('VGuard tracing requires a V source file or project directory')
 +		}
-+		os.write_file(staged, vguard_trace_source(os.real_path(input), prefs)!)!
++		os.write_file(staged, vguard_trace_source(os.real_path(input), prefs, calls)!)!
 +	}
 +	success = true
 +	return staged, root
 +}
 +
-+fn vguard_trace_dir(input string, output string, prefs &pref.Preferences) ! {
++fn vguard_trace_dir(input string, output string, prefs &pref.Preferences, calls bool) ! {
 +	os.mkdir(output)!
 +	for name in os.ls(input)! {
 +		if name == '.git' {
@@ -576,16 +587,17 @@ index 0000000000..c2fbbc07d9
 +			os.cp_all(src, dst, false)!
 +		} else if name.ends_with('.v') && !name.ends_with('_test.v')
 +			&& !pref.file_has_incompatible_target_suffix(name, prefs.target) {
-+			os.write_file(dst, vguard_trace_source(src, prefs)!)!
++			os.write_file(dst, vguard_trace_source(src, prefs, calls)!)!
 +		} else {
 +			os.cp(src, dst)!
 +		}
 +	}
 +}
 +
-+fn vguard_trace_source(path string, prefs &pref.Preferences) !string {
++fn vguard_trace_source(path string, prefs &pref.Preferences, calls bool) !string {
 +	source := os.read_file(path)!
 +	mut p := parser.Parser.new(prefs)
++	p.vguard_record_entries = calls
 +	a := p.parse_text(path, source)
 +	fastc := prefs.backend == 'fastc'
 +	limited := fastc || 'vguard_fastc_trace' in prefs.user_defines
@@ -593,7 +605,21 @@ index 0000000000..c2fbbc07d9
 +	mut edits := []VGuardEdit{}
 +	mut seen := map[u64]bool{}
 +	mut fastc_types := map[string]bool{}
-+	for node in a.nodes {
++	for index, node in a.nodes {
++		if calls {
++			if offset := p.vguard_entry_offsets[index] {
++				if offset > 0 && offset <= source.len && source[offset - 1] == `{` {
++					pos := a.source_position(node.pos) or { continue }
++					site := pos.filename.bytes().hex()
++					name := node.value.bytes().hex()
++					edits << VGuardEdit{
++						offset: offset
++						order:  -source.len * 2 - 1
++						text:   "\n\teprintln('\\x1eVGUARD\\t${site}\\t${pos.line}\\t${pos.column}\\tfunction_enter\\t${name}')\n"
++					}
++				}
++			}
++		}
 +		mut child := 0
 +		kind := match node.kind {
 +			.decl_assign, .assign {
@@ -1008,6 +1034,47 @@ index 97e3816419..fc120d960a 100644
 +pub fn (g &SSAGen) vguard_emission_ranges() []ssa.EmissionRange {
 +    return g.vguard_ranges
 +}
+diff --git a/vlib/v/parser/parser.v b/vlib/v/parser/parser.v
+index 5b34690044..98440134f0 100644
+--- a/vlib/v/parser/parser.v
++++ b/vlib/v/parser/parser.v
+@@ -234,6 +234,8 @@ mut:
+ 	text_value_cache &flat.TextProbeCache = unsafe { nil }
+ 	text_type_cache  &flat.TextProbeCache = unsafe { nil }
+ pub mut:
++	vguard_record_entries bool
++	vguard_entry_offsets  map[int]int
+ 	a &flat.FlatAst = unsafe { nil }
+ 	// no_source_digests leaves the SHA-256 of each parsed source out (see
+ 	// token.File.index_line_starts): the compiler driver sets it for a build
+@@ -2253,6 +2255,9 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
+ 	}
+ 
+ 	// body
++	body_start := p.tok_pos
++	record_vguard_entry := p.vguard_record_entries && !disable_body
++		&& !p.pending_decl_attrs.any(it.all_before(':') == 'naked')
+ 	mut body_ids := []flat.NodeId{}
+ 	mut formatter_end := 0
+ 	prev_fn := p.cur_fn
+@@ -2298,7 +2303,6 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
+ 		p.skip_block()
+ 		formatter_end = p.prev_tok_end
+ 	} else {
+-		body_start := p.tok_pos
+ 		p.check(.lcbr)
+ 		p.predeclare_local_type_names_in_block(body_start)
+ 		for p.tok != .rcbr && p.tok != .eof {
+@@ -2340,6 +2344,9 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
+ 		children_count: flat.child_count(param_ids.len + body_ids.len)
+ 		flags:          flat.node_flags(false, is_static_type_method)
+ 	})
++	if record_vguard_entry {
++		p.vguard_entry_offsets[int(id)] = body_start + 1
++	}
+ 	if p.prefs.is_fmt && formatter_end > 0 {
+ 		p.a.formatter_node_ends[int(id)] = formatter_end
+ 	}
 diff --git a/vlib/v/pref/pref.v b/vlib/v/pref/pref.v
 index 81c8993a48..72a4078e74 100644
 --- a/vlib/v/pref/pref.v
@@ -1030,26 +1097,28 @@ index 81c8993a48..72a4078e74 100644
  		'-cov', '-coverage', '-profile-fns', '-bug-report-url', '-run-only', '-exclude', '-file-list',
  		'-test-runner', '-dump-c-flags', '-dump-modules', '-dump-files', '-dump-defines',
 diff --git a/vlib/v/ssa/builder.v b/vlib/v/ssa/builder.v
-index a8c6e9561b..c992b9fed0 100644
+index a8c6e9561b..3599573e46 100644
 --- a/vlib/v/ssa/builder.v
 +++ b/vlib/v/ssa/builder.v
-@@ -235,6 +235,7 @@ struct IfGuardState {
+@@ -235,6 +235,8 @@ struct IfGuardState {
  // reproduces the default whole-program build.
  pub struct BuildOptions {
  pub:
 +	vguard_enabled bool
++	vguard_track_ast bool
  	hot_fn                 string   // build only this function's body (hot reload)
  	skip_fn_bodies         bool     // register signatures only, mark them prototypes
  	skip_modules           []string // skip all functions declared in these modules
-@@ -338,6 +339,7 @@ pub fn build_with_options(a_ &flat.FlatAst, used_fns map[string]bool, tc &types.
+@@ -338,6 +340,8 @@ pub fn build_with_options(a_ &flat.FlatAst, used_fns map[string]bool, tc &types.
  		c_constants:              opts.c_constants
  		c_struct_layouts:         opts.c_struct_layouts
  	}
-+	b.m.vguard_enabled = opts.vguard_enabled
++	b.m.vguard_enabled = opts.vguard_enabled || opts.vguard_track_ast
++	b.m.vguard_track_ast = opts.vguard_track_ast
  	b.m.track_uses = opts.track_uses
  	b.m.target = opts.target
  	b.void_type = TypeID(0)
-@@ -9985,6 +9987,22 @@ fn (mut b Builder) build_result_error_value(result_type TypeID, error_value Valu
+@@ -9985,6 +9989,25 @@ fn (mut b Builder) build_result_error_value(result_type TypeID, error_value Valu
  
  // build_stmt builds stmt data for ssa.
  fn (mut b Builder) build_stmt(id flat.NodeId) {
@@ -1058,12 +1127,15 @@ index a8c6e9561b..c992b9fed0 100644
 +		return
 +	}
 +	previous := b.m.vguard_pos
++	previous_node := b.m.vguard_ast_node
 +	pos := b.a.nodes[int(id)].pos
++	b.m.vguard_ast_node = if b.m.vguard_track_ast && pos.is_valid() { int(id) } else { -1 }
 +	if pos.is_valid() {
 +		b.m.vguard_pos = pos
 +	}
 +	defer {
 +		b.m.vguard_pos = previous
++		b.m.vguard_ast_node = previous_node
 +	}
 +	b.build_stmt_impl(id)
 +}
@@ -1072,7 +1144,7 @@ index a8c6e9561b..c992b9fed0 100644
  	if int(id) < 0 {
  		return
  	}
-@@ -11467,6 +11485,21 @@ fn (mut b Builder) build_assert(node flat.Node) {
+@@ -11467,6 +11490,24 @@ fn (mut b Builder) build_assert(node flat.Node) {
  
  // build_expr builds expr data for ssa.
  fn (mut b Builder) build_expr(id flat.NodeId) ValueID {
@@ -1080,12 +1152,15 @@ index a8c6e9561b..c992b9fed0 100644
 +		return b.build_expr_impl(id)
 +	}
 +	previous := b.m.vguard_pos
++	previous_node := b.m.vguard_ast_node
 +	pos := b.a.nodes[int(id)].pos
++	b.m.vguard_ast_node = if b.m.vguard_track_ast && pos.is_valid() { int(id) } else { -1 }
 +	if pos.is_valid() {
 +		b.m.vguard_pos = pos
 +	}
 +	defer {
 +		b.m.vguard_pos = previous
++		b.m.vguard_ast_node = previous_node
 +	}
 +	return b.build_expr_impl(id)
 +}
@@ -1141,6 +1216,18 @@ index 0000000000..29f803fd9f
 +fn ssa_dump_name(name string) string {
 +	return name.replace_each(['\r', '\\r', '\n', '\\n'])
 +}
+diff --git a/vlib/v/ssa/optimize/inline.v b/vlib/v/ssa/optimize/inline.v
+index 9d670148a4..79d8d10eb1 100644
+--- a/vlib/v/ssa/optimize/inline.v
++++ b/vlib/v/ssa/optimize/inline.v
+@@ -233,6 +233,7 @@ fn inline_call(mut m ssa.Module, caller int, blk_id int, at int, callee int) ?in
+ 			}
+ 			mut fresh := m.instrs[m.values[new_id].index]
+ 			fresh.pos = instr.pos
++			m.vguard_copy_ast(old_id, new_id)
+ 			fresh.atomic_ord = instr.atomic_ord
+ 			fresh.inline = instr.inline
+ 			fresh.asm_id = instr.asm_id
 diff --git a/vlib/v/ssa/optimize/mem2reg.v b/vlib/v/ssa/optimize/mem2reg.v
 index 2ff8b117e8..f3ab419c9f 100644
 --- a/vlib/v/ssa/optimize/mem2reg.v
@@ -1268,14 +1355,15 @@ index b7cdd93945..5b962f0874 100644
  }
 diff --git a/vlib/v/ssa/optimize/vguard_trace.v b/vlib/v/ssa/optimize/vguard_trace.v
 new file mode 100644
-index 0000000000..5be04929c9
+index 0000000000..75ce29da51
 --- /dev/null
 +++ b/vlib/v/ssa/optimize/vguard_trace.v
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,183 @@
 +module optimize
 +
 +import strings
 +import os
++import v.flat
 +import v.ssa
 +
 +struct VGuardInstructionChange {
@@ -1306,6 +1394,7 @@ index 0000000000..5be04929c9
 +pub struct VGuardTrace {
 +mut:
 +	file     os.File
++	ast      &flat.FlatAst
 +	previous map[int]ssa.VGuardInstruction
 +	started  bool
 +	failure  string
@@ -1314,14 +1403,15 @@ index 0000000000..5be04929c9
 +fn same_vguard_instruction(a ssa.VGuardInstruction, b ssa.VGuardInstruction) bool {
 +	return a.block == b.block && a.function == b.function && a.op == b.op && a.typ == b.typ
 +		&& a.atomic == b.atomic && a.inline == b.inline && a.asm_id == b.asm_id
-+		&& a.operands == b.operands
++		&& a.operands == b.operands && a.ast.node == b.ast.node
++		&& a.ast.copied_from == b.ast.copied_from
 +}
 +
 +fn (mut trace VGuardTrace) checkpoint(mut m ssa.Module, pass string, verify_pass bool) {
 +	if trace.failure != '' {
 +		return
 +	}
-+	graph := m.vguard_graph()
++	graph := m.vguard_graph(trace.ast)
 +	mut current := map[int]ssa.VGuardInstruction{}
 +	mut created := []ssa.VGuardInstruction{}
 +	mut changed := []VGuardInstructionChange{}
@@ -1380,9 +1470,10 @@ index 0000000000..5be04929c9
 +
 +// trace_vguard_pipeline observes the existing production pipeline. A skipped
 +// pipeline records its reason and saves the actual unoptimized graph.
-+pub fn trace_vguard_pipeline(mut m ssa.Module, path string, skip_reason string) ! {
++pub fn trace_vguard_pipeline(mut m ssa.Module, a &flat.FlatAst, path string, skip_reason string) ! {
 +	mut trace := &VGuardTrace{
 +		file: os.create(path)!
++		ast:  a
 +	}
 +	m.vguard_track_rewrites = true
 +	defer {
@@ -1404,7 +1495,7 @@ index 0000000000..5be04929c9
 +	if trace.failure != '' {
 +		return error(trace.failure)
 +	}
-+	os.write_file(path + '.graph.json', m.vguard_graph().vguard_json())!
++	os.write_file(path + '.graph.json', m.vguard_graph(a).vguard_json())!
 +}
 +
 +fn trace_vguard_checkpoint(mut m ssa.Module, opts OptimizeOptions, pass string, verify_pass bool) {
@@ -1452,44 +1543,66 @@ index 0000000000..5be04929c9
 +	return out.str()
 +}
 diff --git a/vlib/v/ssa/ssa.v b/vlib/v/ssa/ssa.v
-index 4c81b3e1fc..8975bb1243 100644
+index 4c81b3e1fc..64308b2de7 100644
 --- a/vlib/v/ssa/ssa.v
 +++ b/vlib/v/ssa/ssa.v
-@@ -508,6 +508,9 @@ pub mut:
+@@ -508,6 +508,10 @@ pub mut:
  	// errors contains unsupported source expressions encountered during SSA construction.
  	errors     []string
  	target     TargetData
 +	vguard_enabled bool
++	vguard_track_ast bool
 +	vguard_track_rewrites bool
 +	vguard_rewrites []VGuardRewrite
  	track_uses bool = true
  	type_store TypeStore
  	values     []Value
-@@ -542,6 +545,7 @@ pub mut:
+@@ -540,6 +544,10 @@ pub mut:
+ 	// Function name -> index, so registering a symbol does not scan funcs.
+ 	func_index map[string]int
  mut:
++	vguard_pos token.Pos
++	vguard_ast_node int = -1
++	// Instruction table index -> the active AST node when the instruction was built.
++	vguard_ast_nodes map[int]VGuardAstAnchor
  	// A function worker builds one body at a time: constants are interned per
  	// function, and values of the worker's earlier functions are out of bounds.
-+	vguard_pos token.Pos
  	is_function_worker   bool
- 	function_consts      map[string]ValueID
- 	seed_value_end       int
-@@ -615,6 +619,7 @@ pub fn (mut m Module) add_instr(op OpCode, block BlockID, typ TypeID, operands [
+@@ -615,6 +623,10 @@ pub fn (mut m Module) add_instr(op OpCode, block BlockID, typ TypeID, operands [
  		block:    block
  		typ:      typ
  		operands: operands
 +		pos:      m.vguard_pos
++	}
++	if m.vguard_track_ast && m.vguard_ast_node >= 0 {
++		m.vguard_ast_nodes[instr_idx] = VGuardAstAnchor{ node: m.vguard_ast_node }
  	}
  	val_id := m.add_value(.instruction, typ, '', instr_idx)
  	mut blk := m.blocks[block]
-@@ -640,6 +645,7 @@ pub fn (mut m Module) add_instr_front(op OpCode, block BlockID, typ TypeID, oper
+@@ -640,6 +652,10 @@ pub fn (mut m Module) add_instr_front(op OpCode, block BlockID, typ TypeID, oper
  		block:    block
  		typ:      typ
  		operands: operands
 +		pos:      m.vguard_pos
++	}
++	if m.vguard_track_ast && m.vguard_ast_node >= 0 {
++		m.vguard_ast_nodes[instr_idx] = VGuardAstAnchor{ node: m.vguard_ast_node }
  	}
  	val_id := m.add_value(.instruction, typ, '', instr_idx)
  	mut blk := m.blocks[block]
-@@ -1202,6 +1208,7 @@ pub fn (mut m Module) replace_uses(old_id ValueID, new_id ValueID) {
+@@ -781,6 +797,11 @@ pub fn (mut m Module) discard_emission_since(value_count int, instruction_count
+ 		m.const_cache.delete(key)
+ 	}
+ 	if instruction_count < m.instrs.len {
++		if m.vguard_track_ast {
++			for index in instruction_count .. m.instrs.len {
++				m.vguard_ast_nodes.delete(index)
++			}
++		}
+ 		m.instrs.trim(instruction_count)
+ 	}
+ 	if value_count < m.values.len {
+@@ -1202,6 +1223,7 @@ pub fn (mut m Module) replace_uses(old_id ValueID, new_id ValueID) {
  			}
  		}
  		if changed {
@@ -1537,13 +1650,14 @@ index 0000000000..d53abf012d
 +}
 diff --git a/vlib/v/ssa/vguard_graph.v b/vlib/v/ssa/vguard_graph.v
 new file mode 100644
-index 0000000000..c3c3aafa41
+index 0000000000..79dfe5888f
 --- /dev/null
 +++ b/vlib/v/ssa/vguard_graph.v
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,239 @@
 +module ssa
 +
 +import strings
++import v.flat
 +import v.errors
 +
 +// VGuardOperand records the role assigned by the compiler, including phi edges
@@ -1553,6 +1667,25 @@ index 0000000000..c3c3aafa41
 +	id   int
 +	role string
 +	kind string
++}
++
++struct VGuardAstAnchor {
++	node        int
++	copied_from int = -1
++}
++
++// VGuardAst is the builder's active FlatAst node at instruction allocation.
++pub struct VGuardAst {
++pub:
++	node        int = -1
++	kind        string
++	file        string
++	line        int
++	column      int
++	source_file string
++	start_byte  int
++	end_byte    int
++	copied_from int = -1
 +}
 +
 +pub struct VGuardInstruction {
@@ -1566,6 +1699,7 @@ index 0000000000..c3c3aafa41
 +	inline   string
 +	asm_id   int
 +	operands []VGuardOperand
++	ast      VGuardAst
 +}
 +
 +pub struct VGuardBlock {
@@ -1590,9 +1724,27 @@ index 0000000000..c3c3aafa41
 +	user int
 +}
 +
++fn (m &Module) vguard_ast_at(a &flat.FlatAst, index int) VGuardAst {
++	anchor := m.vguard_ast_nodes[index] or { return VGuardAst{} }
++	node := a.nodes[anchor.node]
++	pos := a.source_position(node.pos) or { return VGuardAst{} }
++	physical := a.source_files[node.pos.id] or { return VGuardAst{} }
++	return VGuardAst{
++		node:        anchor.node
++		kind:        node.kind.str()
++		file:        pos.filename
++		line:        pos.line
++		column:      pos.column
++		source_file: physical.name
++		start_byte:  int(node.pos.offset)
++		end_byte:    int(node.pos.end)
++		copied_from: anchor.copied_from
++	}
++}
++
 +// vguard_graph captures the live instruction lists and compiler operand roles.
 +// Derive successor edges from terminators so this works before CFG analysis too.
-+pub fn (m &Module) vguard_graph() VGuardGraph {
++pub fn (m &Module) vguard_graph(a &flat.FlatAst) VGuardGraph {
 +	mut instructions := []VGuardInstruction{}
 +	mut blocks := []VGuardBlock{}
 +	for func in m.funcs {
@@ -1642,6 +1794,7 @@ index 0000000000..c3c3aafa41
 +					inline:   instr.inline.str()
 +					asm_id:   instr.asm_id
 +					operands: operands
++					ast:      m.vguard_ast_at(a, value.index)
 +				}
 +			}
 +			if members.len > 0 {
@@ -1673,6 +1826,19 @@ index 0000000000..c3c3aafa41
 +	}
 +}
 +
++// vguard_copy_ast records a clone made by the optimizer's inliner.
++@[inline]
++pub fn (mut m Module) vguard_copy_ast(from ValueID, to ValueID) {
++	if m.vguard_track_ast {
++		if anchor := m.vguard_ast_nodes[m.values[from].index] {
++			m.vguard_ast_nodes[m.values[to].index] = VGuardAstAnchor{
++				node:        anchor.node
++				copied_from: int(from)
++			}
++		}
++	}
++}
++
 +// vguard_json_quote uses the same escaping as compiler diagnostics.
 +pub fn vguard_json_quote(text string) string {
 +	return '"' + errors.json_escape(text) + '"'
@@ -1688,7 +1854,18 @@ index 0000000000..c3c3aafa41
 +		}
 +		out.write_string('{"id":${operand.id},"role":${vguard_json_quote(operand.role)},"kind":${vguard_json_quote(operand.kind)}}')
 +	}
-+	out.write_string(']}')
++	out.write_u8(`]`)
++	if instruction.ast.node >= 0 {
++		ast := instruction.ast
++		out.write_string(',"ast":{"node":${ast.node},"kind":${vguard_json_quote(ast.kind)}')
++		out.write_string(',"file":${vguard_json_quote(ast.file)},"line":${ast.line},"column":${ast.column}')
++		out.write_string(',"source_file":${vguard_json_quote(ast.source_file)},"start_byte":${ast.start_byte},"end_byte":${ast.end_byte}')
++		if ast.copied_from >= 0 {
++			out.write_string(',"copied_from":${ast.copied_from}')
++		}
++		out.write_u8(`}`)
++	}
++	out.write_u8(`}`)
 +}
 +
 +pub fn write_vguard_instructions(mut out strings.Builder, instructions []VGuardInstruction) {
@@ -1717,14 +1894,29 @@ index 0000000000..c3c3aafa41
 +	return out.str()
 +}
 diff --git a/vlib/v/ssa/worker.v b/vlib/v/ssa/worker.v
-index f9871ad132..d1bb2fbba7 100644
+index f9871ad132..b21eb09920 100644
 --- a/vlib/v/ssa/worker.v
 +++ b/vlib/v/ssa/worker.v
-@@ -127,6 +127,7 @@ fn (m &Module) new_worker_module() &Module {
+@@ -127,6 +127,8 @@ fn (m &Module) new_worker_module() &Module {
  	mut w := &Module{
  		name:               m.name
  		target:             m.target
-+		vguard_enabled:      m.vguard_enabled
++		vguard_enabled:     m.vguard_enabled
++		vguard_track_ast:   m.vguard_track_ast
  		track_uses:         false
  		type_store:         wts
  		funcs:              []Function{cap: m.funcs.len + 64}
+@@ -462,6 +464,13 @@ fn (mut b Builder) merge_function_workers(jobs []FunctionJob, fragments []Functi
+ 	}
+ 	for i, fragment in fragments {
+ 		worker := pool_workers[fragment.worker]
++		if b.m.vguard_track_ast {
++			for instruction in fragment.instr_lo .. fragment.instr_hi {
++				if node := worker.b.m.vguard_ast_nodes[instruction] {
++					b.m.vguard_ast_nodes[instruction + plans[i].instr_off] = node
++				}
++			}
++		}
+ 		for error_index in fragment.error_lo .. fragment.error_hi {
+ 			b.m.errors << worker.b.m.errors[error_index]
+ 		}

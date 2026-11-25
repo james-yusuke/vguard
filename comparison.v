@@ -231,12 +231,17 @@ fn split_trace(stderr string) !(string, []TraceEvent) {
 		if fields.len != 5 || fields[1].int() <= 0 || fields[2].int() <= 0 || fields[4] == '' {
 			return error('malformed VGuard trace event')
 		}
+		value := if fields[3] == 'function_enter' {
+			hex.decode(fields[4])!.bytestr()
+		} else {
+			fields[4]
+		}
 		events << TraceEvent{
 			file:   hex.decode(fields[0])!.bytestr()
 			line:   fields[1].int()
 			column: fields[2].int()
 			kind:   fields[3]
-			value:  fields[4]
+			value:  value
 		}
 		next = end + 1
 	}

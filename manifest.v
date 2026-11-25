@@ -143,6 +143,7 @@ fn artifact_name(options BuildOptions) string {
 struct BuildOutput {
 	trace_build bool
 	trace_ssa   bool
+	trace_calls bool
 }
 
 fn build(options BuildOptions, out string, trace bool, output BuildOutput) !string {
@@ -180,6 +181,9 @@ fn build(options BuildOptions, out string, trace bool, output BuildOutput) !stri
 	}
 	if trace {
 		args << '-vguard-trace'
+	}
+	if output.trace_calls {
+		args << '-vguard-trace-calls'
 	}
 	if output.trace_ssa {
 		args << '-vguard-ssa-analysis'

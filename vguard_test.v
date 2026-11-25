@@ -4,6 +4,21 @@ import crypto.sha256
 import json2
 import os
 
+fn test_line_reduction_keeps_required_lines_and_reports_budget_exhaustion() {
+	input := 'first\nkeep\nsecond\nthird\n'
+	predicate := fn (candidate string) !bool {
+		return candidate.contains('keep')
+	}
+	full := reduce_lines(input, 10, predicate) or { panic(err) }
+	assert full.source == 'keep\n'
+	assert full.lines == 1
+	assert full.complete
+	limited := reduce_lines(input, 1, predicate) or { panic(err) }
+	assert limited.attempts == 1
+	assert limited.source == input
+	assert !limited.complete
+}
+
 fn test_fuel_option_requires_positive_u64() {
 	assert (parse_fuel('100000') or { panic(err) }) == u64(100000)
 	assert (parse_fuel('18446744073709551615') or { panic(err) }) == u64(18446744073709551615)

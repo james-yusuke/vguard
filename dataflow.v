@@ -12,6 +12,18 @@ struct SsaOperand {
 	kind string
 }
 
+struct SsaAst {
+	node        int
+	kind        string
+	file        string
+	line        int
+	column      int
+	source_file string
+	start_byte  int
+	end_byte    int
+	copied_from ?int @[omitempty]
+}
+
 struct SsaInstruction {
 	id       int
 	block    int
@@ -19,6 +31,7 @@ struct SsaInstruction {
 	op       string
 	typ      int
 	operands []SsaOperand
+	ast      ?SsaAst @[omitempty]
 }
 
 struct SsaBlock {
@@ -188,6 +201,11 @@ fn (graph SsaGraph) backward(location Location) !SsaDataflow {
 fn write_dataflow(mut out strings.Builder, report Diagnosis) {
 	if analysis := report.ssa_dataflow {
 		out.writeln('  = static SSA dependencies for %${analysis.root} (possible execution paths)')
+		if analysis.nodes.len > 0 {
+			if ast := analysis.nodes[0].ast {
+				out.writeln('    AST node ${ast.node} (${ast.kind}) at ${ast.file}:${ast.line}:${ast.column}')
+			}
+		}
 		for edge in analysis.edges {
 			if edge.from == analysis.root {
 				out.writeln('    %${edge.from} <- %${edge.to} (${edge.kind})')
