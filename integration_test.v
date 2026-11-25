@@ -38,6 +38,9 @@ fn main() {
 		value = base + 1
 	}
 	println(result(value))
+	if os.args.contains('nonzero') {
+		exit(5)
+	}
 }
 ") or {
 		panic(err)
@@ -84,6 +87,46 @@ fn main() {
 	assert text.contains("selected := os.executable().contains('reference')")
 	assert text.contains('= target: assignment = false')
 	assert text.contains('= reference: assignment = true')
+	assert !json2.encode(report).contains('"build_comparison"')
+
+	reference_path := build(BuildOptions{ ...options, backend: 'c' }, os.join_path(dir, 'manual-reference'), false) or { panic(err) }
+	reference := open_bundle(reference_path) or { panic(err) }
+	explicit := compare_recorded(bundle, reference, ExecutionCase{}) or { panic(err) }
+	assert explicit.kind == 'different'
+	observed := explicit.build_comparison or { panic('missing build comparison') }
+	assert (observed.first_stdout_difference or { -1 }) == 1
+	assert observed.reference.backend == 'c'
+	assert explicit.divergence != none
+	series_path := os.join_path(dir, 'series.json')
+	os.write_file(series_path, json2.encode(RegressionSeries{
+		builds: [
+			RegressionBuildSpec{ label: 'baseline', manifest: 'target/build.json' },
+			RegressionBuildSpec{ label: 'still-matching', manifest: 'target/build.json' },
+			RegressionBuildSpec{ label: 'changed', manifest: 'manual-reference/build.json' },
+			RegressionBuildSpec{ label: 'later', manifest: 'target/build.json' },
+		]
+	})) or { panic(err) }
+	series := load_regression_series(series_path) or { panic(err) }
+	regression := find_regression(series, ExecutionCase{}) or { panic(err) }
+	assert regression.kind == 'changed'
+	assert regression.last_matching == 'still-matching'
+	assert regression.first_changed == 'changed'
+	assert regression.samples.map(it.runs) == [2, 2, 2]
+	assert (regression.first_stdout_difference or { -1 }) == 1
+	stable := find_regression(RegressionSeries{ builds: series.builds[..2] }, ExecutionCase{}) or {
+		panic(err)
+	}
+	assert stable.kind == 'unchanged'
+	assert stable.last_matching == 'still-matching'
+	failed_regression := find_regression(series, ExecutionCase{ argv: ['nonzero'] }) or { panic(err) }
+	assert failed_regression.kind == 'inconclusive'
+	assert failed_regression.reason.contains('exit code 5')
+	assert failed_regression.samples.len == 1
+	history_path := record_history(bundle, ExecutionCase{}, os.join_path(dir, 'history')) or { panic(err) }
+	history := open_history(history_path) or { panic(err) }
+	assert history.outcome.stdout == '14\n'
+	assert history.events.any(it.kind == 'assignment' && it.value == 'false')
+	assert format_history(history).contains('Recorded scalar checkpoints')
 
 	rejected := os.join_path(dir, 'rejected.v')
 	os.write_file(rejected, 'fn main() { missing_api() }\n') or { panic(err) }
@@ -99,6 +142,47 @@ fn main() {
 	assert !failed_trace.stages.any(it.name == 'ssa build')
 	compiler_error := os.read_file(os.join_path(failed_output, 'compiler.stderr.log')) or { panic(err) }
 	assert compiler_error.contains('missing_api')
+}
+
+fn test_wasmtime_fuel_budget_reports_the_stop_with_available_precision() {
+	compiler := os.getenv('VGUARD_TEST_COMPILER')
+	if compiler == '' {
+		return
+	}
+	executable('wasmtime') or { return }
+	dir := temp_directory() or { panic(err) }
+	defer { os.rmdir_all(dir) or {} }
+	source := os.real_path(os.join_path(@VMODROOT, 'examples', 'hangs', 'spin.v'))
+	manifest := build(BuildOptions{
+		source:   source
+		compiler: os.real_path(compiler)
+		backend:  'wasm'
+		target:   'wasm32_emscripten/wasm32'
+	}, os.join_path(dir, 'spin'), false, trace_ssa: true) or { panic(err) }
+	bundle := open_bundle(manifest) or { panic(err) }
+	report := bundle.run(ExecutionCase{ timeout_ms: 10000 }, fuel: 100000) or { panic(err) }
+	assert report.kind == 'fuel_exhausted', report.outcome.stderr
+	limit := report.execution_limit or { panic('missing execution limit') }
+	assert limit.kind == 'wasm_fuel'
+	assert limit.limit == 100000
+	assert limit.evidence == 'wasmtime_cli_trap'
+	assert report.address.starts_with('0x')
+	location := report.location or { panic(report.location_error) }
+	assert location.function == 'main'
+	assert location.file == source
+	flow_report := bundle.with_dataflow(report)
+	if location.precision == 'function_body' {
+		assert location.line == 0
+		assert location.ssa_value == -1
+		assert flow_report.ssa_dataflow == none
+		assert report.location_error.contains('no SSA range')
+	} else {
+		assert location.line == 3
+		assert location.ssa_value >= 0
+		analysis := flow_report.ssa_dataflow or { panic(flow_report.ssa_dataflow_error) }
+		assert analysis.root == location.ssa_value
+	}
+	assert bundle.format_diagnosis(report).contains('wasm_fuel = 100000')
 }
 
 fn read_test_compile_trace(out string) !CompileTrace {
@@ -135,7 +219,10 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 			compiler: os.real_path(compiler)
 			backend:  'wasm'
 			target:   'wasm32_emscripten/wasm32'
-		}, os.join_path(dir, example.name), false) or { panic(err) }
+			prod:     example.name == 'rounded_divisor'
+		}, os.join_path(dir, example.name), false,
+			trace_ssa: example.name == 'rounded_divisor'
+		) or { panic(err) }
 		bundle := open_bundle(manifest) or { panic(err) }
 		diagnosis := bundle.run(ExecutionCase{}) or { panic(err) }
 		assert diagnosis.kind == 'crash'
@@ -169,6 +256,82 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 		assert text.contains('SSA (annotated)\nSSA function ${example.function} ret=')
 		assert !text.contains('SSA function main ret=')
 		assert bundle.format_ssa_diagnosis(diagnosis) == ssa_report
+		if example.name == 'rounded_divisor' {
+			assert_pass_log_matches_graph(bundle) or { panic(err) }
+			traced := bundle.with_dataflow(diagnosis)
+			flow := traced.ssa_dataflow or { panic(traced.ssa_dataflow_error) }
+			assert flow.root == location.ssa_value
+			assert flow.evidence == 'static_ssa_candidates'
+			assert flow.nodes.any(it.op == 'sdiv')
+		} else {
+			assert bundle.manifest.ssa_graph_sha256 == ''
+			assert !json2.encode(bundle.manifest).contains('"ssa_graph_sha256"')
+			encoded := json2.encode(diagnosis)
+			assert !encoded.contains('"ssa_dataflow"')
+			assert !encoded.contains('"stack_trace"')
+		}
+	}
+}
+
+struct TestPassRewrite {
+	from int
+	to   int
+	user int
+}
+
+struct TestPassChange {
+	before SsaInstruction
+	after  SsaInstruction
+}
+
+struct TestPass {
+	pass         string
+	verifier_ran bool
+	created      []SsaInstruction
+	removed      []SsaInstruction
+	changed      []TestPassChange
+	rewrites     []TestPassRewrite
+}
+
+fn assert_pass_log_matches_graph(bundle Bundle) ! {
+	path := bundle.ssa_path.trim_string_right('.ssa') + '.passes.jsonl'
+	data := os.read_bytes(path)!
+	assert digest(data) == bundle.manifest.ssa_passes_sha256
+	mut state := map[int]SsaInstruction{}
+	mut removed := 0
+	mut rewrites := 0
+	mut last := ''
+	for line in data.bytestr().split_into_lines() {
+		pass := json2.decode[TestPass](line)!
+		last = pass.pass
+		if pass.pass == 'mem2reg' {
+			assert pass.verifier_ran
+		}
+		for instruction in pass.removed {
+			assert instruction.id in state
+			state.delete(instruction.id)
+			removed++
+		}
+		for change in pass.changed {
+			assert change.before.id in state
+			assert state[change.before.id].op == change.before.op
+			assert change.before.id == change.after.id
+			state[change.after.id] = change.after
+		}
+		for instruction in pass.created {
+			assert instruction.id !in state
+			state[instruction.id] = instruction
+		}
+		rewrites += pass.rewrites.len
+	}
+	assert last == 'final'
+	assert removed > 0
+	assert rewrites > 0
+	graph := bundle.read_ssa_graph()!
+	assert state.len == graph.instructions.len
+	for instruction in graph.instructions {
+		assert instruction.id in state
+		assert state[instruction.id] == instruction
 	}
 }
 

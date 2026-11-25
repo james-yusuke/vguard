@@ -4,6 +4,42 @@ import crypto.sha256
 import json2
 import os
 
+fn test_fuel_option_requires_positive_u64() {
+	assert (parse_fuel('100000') or { panic(err) }) == u64(100000)
+	assert (parse_fuel('18446744073709551615') or { panic(err) }) == u64(18446744073709551615)
+	for invalid in ['0', '', '-1', '1.5', '18446744073709551616'] {
+		parse_fuel(invalid) or { continue }
+		assert false, invalid
+	}
+}
+
+fn test_wasm_fuel_limit_requires_the_final_trap_cause() {
+	base := Diagnosis{
+		kind:    'crash'
+		address: '0x23'
+		outcome: Outcome{
+			status:    'exited'
+			exit_code: 1
+			stderr:    '2: wasm trap: all fuel consumed by WebAssembly\n'
+		}
+	}
+	assert with_wasm_limit(base, 0, 500).kind == 'crash'
+	assert !json2.encode(with_wasm_limit(base, 0, 500)).contains('"execution_limit"')
+	limited := with_wasm_limit(base, 1000, 500)
+	assert limited.kind == 'fuel_exhausted'
+	assert limited.address == '0x23'
+	trap := Diagnosis{
+		...base
+		outcome: Outcome{ ...base.outcome, stderr: base.outcome.stderr + '3: wasm trap: unreachable\n' }
+	}
+	assert with_wasm_limit(trap, 1000, 500).kind == 'crash'
+	timed := with_wasm_limit(Diagnosis{ kind: 'timeout' }, 1000, 500)
+	limit := timed.execution_limit or { panic('missing wall time limit') }
+	assert timed.kind == 'timeout'
+	assert limit.kind == 'wall_time_ms'
+	assert limit.limit == 500
+}
+
 fn test_terminal_diagnosis_places_the_caret_after_tabs_and_wide_characters() {
 	dir := temp_directory() or { panic(err) }
 	defer {

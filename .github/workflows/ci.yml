@@ -122,7 +122,7 @@ jobs:
           VFLAGS: "-cc clang -gc none"
           VGUARD_TEST_COMPILER: ${{ github.workspace }}/target-v/v-vguard
         run: |
-          ../host-v/v fmt -verify ./*.v examples/crash.v examples/crashes/*.v examples/memory_scan/main.v
+          ../host-v/v fmt -verify ./*.v examples/crash.v examples/crashes/*.v examples/hangs/*.v examples/memory_scan/main.v
           sh -n examples/run_crash.sh
           ../host-v/v test .
 
@@ -160,7 +160,7 @@ jobs:
             "$work/vguard" build "$source" --v "$target_v" --target "$VGUARD_TARGET" \
               --backend "$VGUARD_BACKEND" --out "$build" --v-arg -gc --v-arg none
             status=0
-            "$work/vguard" run "$build/build.json" --json > "$report" || status=$?
+            "$work/vguard" run "$build/build.json" --stack --json > "$report" || status=$?
             cat "$report"
             test "$status" -eq 1
           done
@@ -184,6 +184,8 @@ jobs:
           ):
               crash = json.loads((artifacts / f"{name}.json").read_text())
               assert crash["kind"] == "crash" and "SIGABRT" in crash["reason"], crash
+              assert crash["stack_trace"]["evidence"] == "debugger_at_stop", crash
+              assert crash["stack_trace"]["text"], crash
               assert crash["location"]["file"].endswith("/" + source), crash
               assert crash["location"]["line"] == line, crash
               assert crash["location"]["ssa_opcode"] == "call", crash

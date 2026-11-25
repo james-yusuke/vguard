@@ -123,6 +123,70 @@ Apple Siliconでは、リポジトリのルートからパッチ適用済みのV
 
 JSONには、Vが `-show-timings` で報告した順に工程を記録します。並列処理では工程ごとの計測時間が重なる場合があります。VGuardのビルドが成功すると `build.json` も生成され、`run`・`resolve`・`compare` に渡せます。
 
+## SSA解析と実行記録
+
+[同梱パッチ](compiler/vguard.patch)を更新したVコンパイラで、amd64・arm64・Wasmの
+ビルドに `--trace-ssa` を指定します。最適化パスを観測する場合は `--prod` も付けます。
+
+```sh
+./vguard build examples/crashes/rounded_divisor.v --v ../v/v-vguard \
+  --backend wasm --target wasm32_emscripten/wasm32 --prod --trace-ssa --out ./ssa-analysis
+./vguard run ./ssa-analysis/build.json --dataflow --json
+```
+
+`program.vgmap.json.passes.jsonl` には初期状態と、各チェックポイント間で追加・変更・削除された
+命令を保存します。置換は、実際にオペランドを書き換えた使用箇所を記録します。
+Verifierを実行した地点と所見の重要度も記録します。最適化を実行しないビルドでは理由と
+その時点のSSAグラフを保存します。グラフは `program.vgmap.json.passes.jsonl.graph.json` にあり、
+マニフェストには両ファイルのチェックサムが入ります。
+
+`run --dataflow` は停止位置に対応したSSA命令から、定義、φ関数の入力、φの展開で生成された
+コピー、先行ブロックの分岐を逆向きにたどります。`ssa_dataflow` は静的な候補を表します。
+探索は128命令までで、上限に達した場合はその旨を報告します。メモリの別名と実際に通過した分岐はこの解析の対象外です。
+
+`run --stack` は、ネイティブの停止時点でデバッガーが取得した全スレッドのバックトレースを
+`stack_trace` に含めます。取得できる引数やソース位置はデバッグ情報に依存します。
+
+`compare --reference other/build.json` は、二つのビルドを同じケースで実行します。
+ビルド情報と、標準出力・標準エラーで最初に異なるバイトを報告します。同じソースと
+元のVコンパイラで差を再現できる場合は、スカラーのチェックポイントも照合します。
+
+順序を指定した複数の既存ビルドから最初の出力変化を探すには `regress` を使います。
+基準のビルドを先頭に置きます。マニフェストの相対パスは一覧ファイルの場所が基準です。
+
+```json
+{
+  "builds": [
+    {"label": "baseline", "manifest": "baseline/build.json"},
+    {"label": "candidate", "manifest": "candidate/build.json"}
+  ]
+}
+```
+
+`./vguard regress ./series.json --case ./case.json --json` で実行します。
+同じソースの指紋を持つビルドを、指定順に各2回実行して標準出力と標準エラーを照合します。
+再現した最初の差分は `changed`、再現性のない結果や正常終了しなかった実行は `inconclusive` です。
+終了コードは `unchanged` が0、`changed` が1、`inconclusive` とエラーが2です。
+
+`record <build.json> --out <new-directory>` は、正常終了したスタンドアロン実行の
+スカラー代入・分岐・戻り値を記録します。計測を付けた実行の出力と終了状態も照合します。
+`replay <new-directory>/history.json` は、その記録を順に表示します。入力の指定には
+`record` の `--case` を使えます。
+
+ビルド時間、追跡ファイルのサイズ、バイナリのバイト一致を計測するベンチマークは
+`python3 benchmarks/ssa_trace.py --help` で実行方法を確認できます。
+
+CPUレジスタ・スタックスロットの対応、ネイティブのShadow Memory、メモリアクセス単位の再生、
+デッドロック判定、再現コードの最小化は未実装です。
+
+### WebAssemblyの実行上限
+
+`run --fuel 100000` はWasmtimeに実行予算を設定します。予算を使い切ると `fuel_exhausted`、
+VGuardの経過時間上限に達すると `timeout` を報告します。どちらも終了コードは2です。
+JSONの `execution_limit` に設定値と報告元を含め、取得できたWasmアドレスとソース位置も表示します。
+停止位置が関数本体に含まれていてSSA命令の範囲外にある場合は、`function_body` の精度で関数を報告します。
+有限の処理でも予算を使い切ることがあるため、無限ループの判定には使えません。[Wasmtimeのfuel仕様](https://docs.wasmtime.dev/api/wasmtime/struct.Store.html#method.set_fuel)
+
 ## メモリ安全性の検査
 
 Cバックエンドで `--memory` を付けて実行形式をビルドし、既存のJSONケースを `run` に渡します。

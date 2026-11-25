@@ -147,6 +147,84 @@ The JSON follows the order in which V reported the stages with `-show-timings`.
 Parallel work can make stage durations overlap. A successful VGuard build also writes
 `build.json` for `run`, `resolve`, and `compare`.
 
+## SSA analysis and recorded executions
+
+Rebuild the pinned V compiler with the updated [companion patch](compiler/vguard.patch).
+Use `--trace-ssa` when building with amd64, arm64, or Wasm. Add `--prod` to
+observe the production SSA optimizer.
+
+```sh
+./vguard build examples/crashes/rounded_divisor.v --v ../v/v-vguard \
+  --backend wasm --target wasm32_emscripten/wasm32 --prod --trace-ssa --out ./ssa-analysis
+./vguard run ./ssa-analysis/build.json --dataflow --json
+```
+
+The build directory contains `program.vgmap.json.passes.jsonl` and
+`program.vgmap.json.passes.jsonl.graph.json`. The pass log starts with a baseline and
+records instruction IDs added, changed, or removed between checkpoints. Rewrite
+events name each user whose operand the optimizer replaced. Verifier findings
+retain the compiler's critical and advisory classification and the checkpoint
+records whether verification ran. A skipped optimizer still emits a graph and
+records the reason. The manifest stores checksums for both files.
+
+`run --dataflow` follows SSA operands, phi inputs, lowered phi copies, and
+predecessor branches from the mapped stop. Results in `ssa_dataflow` describe
+static candidates. There is no runtime branch witness or memory alias resolution
+in this report. The walk examines at most 128 instructions and reports truncation.
+
+`run --stack` captures the native debugger's all-thread backtrace at a fatal stop.
+The `stack_trace` field includes debugger output with the frames, arguments, and
+source locations it could recover. Argument and source information depend on the
+binary's debug metadata. Wasm and sanitizer reports can use their existing
+stack information.
+
+Compare two existing build manifests with `compare --reference other/build.json`
+to run the two binaries with the same case. The report includes build identities
+and the first differing byte in stdout and stderr. For a reproducible difference,
+VGuard also attempts to compare scalar checkpoints when both manifests point to
+the same source and their original compiler binaries are available.
+
+Use `regress` to locate the first observed output change in an ordered series of
+existing builds. List the baseline first. Manifest paths are relative to the series file.
+
+```json
+{
+  "builds": [
+    {"label": "baseline", "manifest": "baseline/build.json"},
+    {"label": "candidate", "manifest": "candidate/build.json"}
+  ]
+}
+```
+
+Run `./vguard regress ./series.json --case ./case.json --json`. The builds must
+share a source fingerprint. VGuard checks stdout and stderr twice per build
+and follows the listed order. It reports `changed` at the first reproducible
+difference or `inconclusive` at an unstable or unsuccessful execution. Exit codes
+are 0 for `unchanged`, 1 for `changed`, and 2 for `inconclusive` or an error.
+
+`record <build.json> --out <new-directory>` records scalar assignments, branches,
+and returns from a standalone program with a successful, matching baseline.
+`replay <new-directory>/history.json` reads those recorded events offline in order.
+Use the existing `--case` option with `record` to select inputs.
+
+Run `python3 benchmarks/ssa_trace.py --help` for the build-time benchmark. It
+measures elapsed time, trace size, and equality of emitted binary bytes.
+
+The current diagnostics cover the SSA pipeline and selected runtime observations.
+CPU register and stack-slot mappings, native Shadow Memory, instruction-level
+memory replay, deadlock classification, and automatic repro reduction remain outside
+this implementation.
+
+### WebAssembly execution limits
+
+`run --fuel 100000` configures a Wasmtime fuel budget. The report distinguishes a
+Wasmtime fuel trap, identified as `fuel_exhausted`, from a VGuard wall-clock `timeout`.
+Both return exit code 2. The JSON `execution_limit` includes the configured limit and
+its evidence source. A fuel trap includes the Wasm address and mapped source location
+when available. If the address falls inside a mapped function but outside all SSA
+ranges, the report identifies the function body. Fuel measures Wasmtime's execution budget, so exhaustion can occur
+during finite computation. [Wasmtime fuel accounting](https://docs.wasmtime.dev/api/wasmtime/struct.Store.html#method.set_fuel)
+
 ## Memory safety checks
 
 Build a standalone executable with the C backend and `--memory`, then run it with the

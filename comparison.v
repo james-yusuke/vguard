@@ -20,11 +20,46 @@ struct Divergence {
 }
 
 struct Comparison {
-	kind           string
-	target         Outcome
-	reference      Outcome
-	divergence     ?Divergence
-	location_error string
+	kind             string
+	target           Outcome
+	reference        Outcome
+	divergence       ?Divergence
+	location_error   string
+	build_comparison ?BuildComparison @[omitempty]
+}
+
+struct ComparedBuild {
+	backend         string
+	target          string
+	prod            bool
+	compiler_sha256 string
+}
+
+struct BuildComparison {
+	target                  ComparedBuild
+	reference               ComparedBuild
+	first_stdout_difference ?int @[omitempty]
+	first_stderr_difference ?int @[omitempty]
+}
+
+fn compared_build(manifest Manifest) ComparedBuild {
+	return ComparedBuild{
+		backend:         manifest.options.backend
+		target:          manifest.options.target
+		prod:            manifest.options.prod
+		compiler_sha256: manifest.compiler_sha256
+	}
+}
+
+fn first_byte_difference(a string, b string) ?int {
+	mut i := 0
+	for i < a.len && i < b.len && a[i] == b[i] {
+		i++
+	}
+	if i == a.len && i == b.len {
+		return none
+	}
+	return i
 }
 
 fn run_for_comparison(bundle Bundle, scenario ExecutionCase) !Outcome {
@@ -54,7 +89,7 @@ fn runtime_result(result Outcome) bool {
 	return result.status in ['exited', 'signal']
 }
 
-fn compare(bundle Bundle, scenario ExecutionCase) !Comparison {
+fn validate_comparison_inputs(bundle Bundle) ! {
 	options := bundle.manifest.options
 	if digest(os.read_bytes(options.compiler)!) != bundle.manifest.compiler_sha256 {
 		return error('the V compiler used for this build has changed')
@@ -62,6 +97,11 @@ fn compare(bundle Bundle, scenario ExecutionCase) !Comparison {
 	if source_digest(options.source, os.dir(bundle.artifact))! != bundle.manifest.source_sha256 {
 		return error('the V source has changed since the build')
 	}
+}
+
+fn compare(bundle Bundle, scenario ExecutionCase) !Comparison {
+	validate_comparison_inputs(bundle)!
+	options := bundle.manifest.options
 
 	work := temp_directory()!
 	defer {
@@ -79,6 +119,11 @@ fn compare(bundle Bundle, scenario ExecutionCase) !Comparison {
 	}
 	reference_path := build(reference_opts, os.join_path(work, 'reference'), false)!
 	ref_bundle := open_bundle(reference_path)!
+	initial := observe_comparison(bundle, ref_bundle, scenario)!
+	return finish_comparison(initial, options, reference_opts, scenario, work)
+}
+
+fn observe_comparison(bundle Bundle, ref_bundle Bundle, scenario ExecutionCase) !Comparison {
 	target := run_for_comparison(bundle, scenario)!
 	reference := run_for_comparison(ref_bundle, scenario)!
 	initial := Comparison{
@@ -93,7 +138,39 @@ fn compare(bundle Bundle, scenario ExecutionCase) !Comparison {
 			location_error: 'at least one execution did not complete within the capture limits'
 		}
 	}
-	if initial.kind == 'equal' {
+	return initial
+}
+
+fn compare_recorded(bundle Bundle, reference Bundle, scenario ExecutionCase) !Comparison {
+	observed := observe_comparison(bundle, reference, scenario)!
+	initial := Comparison{
+		...observed
+		build_comparison: BuildComparison{
+			target:                  compared_build(bundle.manifest)
+			reference:               compared_build(reference.manifest)
+			first_stdout_difference: first_byte_difference(observed.target.stdout, observed.reference.stdout)
+			first_stderr_difference: first_byte_difference(observed.target.stderr, observed.reference.stderr)
+		}
+	}
+	if initial.kind != 'different' {
+		return initial
+	}
+	if bundle.manifest.source_sha256 != reference.manifest.source_sha256
+		|| bundle.manifest.options.source != reference.manifest.options.source {
+		return Comparison{ ...initial, location_error: 'checkpoint comparison requires the same recorded source' }
+	}
+	for item in [bundle, reference] {
+		validate_comparison_inputs(item) or {
+			return Comparison{ ...initial, location_error: err.msg() }
+		}
+	}
+	work := temp_directory()!
+	defer { os.rmdir_all(work) or {} }
+	return finish_comparison(initial, bundle.manifest.options, reference.manifest.options, scenario, work)
+}
+
+fn finish_comparison(initial Comparison, options BuildOptions, reference_opts BuildOptions, scenario ExecutionCase, work string) !Comparison {
+	if initial.kind != 'different' {
 		return initial
 	}
 	divergence := trace_difference(initial, options, reference_opts, scenario, work) or {
@@ -109,7 +186,7 @@ fn compare(bundle Bundle, scenario ExecutionCase) !Comparison {
 }
 
 fn trace_difference(initial Comparison, options BuildOptions, reference_opts BuildOptions, scenario ExecutionCase, work string) !Divergence {
-	target_opts, ref_opts := if options.backend == 'fastc' {
+	target_opts, ref_opts := if options.backend == 'fastc' || reference_opts.backend == 'fastc' {
 		mut target_args := options.args.clone()
 		mut reference_args := reference_opts.args.clone()
 		target_args << ['-d', 'vguard_fastc_trace']

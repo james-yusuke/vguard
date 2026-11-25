@@ -170,6 +170,17 @@ fn (bundle &Bundle) format_diagnosis(report Diagnosis) string {
 	if report.location_error != '' {
 		out.writeln('  = note: ${report.location_error}')
 	}
+	write_dataflow(mut out, report)
+	if limit := report.execution_limit {
+		out.writeln('  = limit: ${limit.kind} = ${limit.limit} (${limit.evidence})')
+	}
+	if stack := report.stack_trace {
+		out.writeln('\nAll-thread debugger backtrace (${stack.debugger})')
+		out.writeln(stack.text)
+	}
+	if report.stack_error != '' {
+		out.writeln('  = note: ${report.stack_error}')
+	}
 	if report.ssa_file != '' {
 		out.writeln('  = original SSA: ${report.ssa_original_file}')
 		out.writeln('  = annotated SSA: ${report.ssa_file}')
@@ -250,20 +261,29 @@ fn write_trace_difference(mut out strings.Builder, diff Divergence, source_error
 }
 
 fn (bundle &Bundle) format_comparison(report Comparison) string {
-	if report.kind == 'equal' {
+	if report.kind == 'equal' && report.build_comparison == none {
 		return 'VGuard: target and reference agree\n'
 	}
 	mut out := strings.new_builder(512)
-	out.writeln(if report.kind == 'different' {
-		'error[comparison]: target and reference results differ'
-	} else {
-		'error[comparison]: comparison is inconclusive'
+	out.writeln(match report.kind {
+		'equal' { 'VGuard: target and reference agree' }
+		'different' { 'error[comparison]: target and reference results differ' }
+		else { 'error[comparison]: comparison is inconclusive' }
 	})
 	if diff := report.divergence {
 		write_trace_difference(mut out, diff, bundle.diagnostic_source_error())
 	}
 	if report.location_error != '' {
 		out.writeln('  = note: ${report.location_error}')
+	}
+	if details := report.build_comparison {
+		out.writeln('  = builds: ${details.target.backend}/${details.target.target} (prod=${details.target.prod}) and ${details.reference.backend}/${details.reference.target} (prod=${details.reference.prod})')
+		if offset := details.first_stdout_difference {
+			out.writeln('  = first stdout difference at byte ${offset}')
+		}
+		if offset := details.first_stderr_difference {
+			out.writeln('  = first stderr difference at byte ${offset}')
+		}
 	}
 	if report.target.stdout != report.reference.stdout {
 		out.writeln('  = target stdout: ${json2.encode(report.target.stdout)}')

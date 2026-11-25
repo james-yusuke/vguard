@@ -117,6 +117,17 @@ SSA 5770 sdiv typ=2 ops=['5768:instruction:2:', '5769:instruction:2:'] << WebAss
 ./vguard resolve "$work/rounded-divisor/build.json" --offset 0x1d5
 ```
 
+## WebAssemblyのループを実行上限で停止する
+
+```sh
+./vguard build examples/hangs/spin.v --v "$target_v" \
+  --backend wasm --target wasm32_emscripten/wasm32 --out "$work/spin" --trace-ssa
+./vguard run "$work/spin/build.json" --fuel 100000 --dataflow --json
+```
+
+ループがWasmtimeの実行予算を使い切ると停止します。JSONの `fuel_exhausted` と
+`execution_limit` で観測結果を確認できます。終了コードは2です。
+
 ## メモリ検査
 
 [`memory_scan/main.v`](memory_scan/main.v) は `--memory` の正常系サンプルです。

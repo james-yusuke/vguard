@@ -119,6 +119,17 @@ Use the `stop address` from your report as the module offset. This example uses 
 ./vguard resolve "$work/rounded-divisor/build.json" --offset 0x1d5
 ```
 
+## Limit a WebAssembly loop
+
+```sh
+./vguard build examples/hangs/spin.v --v "$target_v" \
+  --backend wasm --target wasm32_emscripten/wasm32 --out "$work/spin" --trace-ssa
+./vguard run "$work/spin/build.json" --fuel 100000 --dataflow --json
+```
+
+The loop consumes the Wasmtime fuel budget. In the JSON, look for `fuel_exhausted`
+and the reported `execution_limit`. The exit code is 2.
+
 ## Memory check
 
 [`memory_scan/main.v`](memory_scan/main.v) is a normal execution case for `--memory`.

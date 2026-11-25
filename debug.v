@@ -4,24 +4,48 @@ import os
 import strconv
 
 struct Diagnosis {
-	kind              string
-	reason            string
-	address           string
-	location          ?Location
-	location_error    string
-	ssa_file          string
-	ssa_original_file string @[omitempty]
-	ssa_error         string
-	ssa_excerpt       SsaExcerpt        @[skip]
-	memory_errors     []MemoryViolation @[omitempty]
-	outcome           Outcome
+	kind               string
+	reason             string
+	address            string
+	location           ?Location
+	location_error     string
+	ssa_file           string
+	ssa_original_file  string @[omitempty]
+	ssa_error          string
+	ssa_excerpt        SsaExcerpt        @[skip]
+	ssa_dataflow       ?SsaDataflow      @[omitempty]
+	ssa_dataflow_error string            @[omitempty]
+	stack_trace        ?DebuggerStack    @[omitempty]
+	stack_error        string            @[omitempty]
+	execution_limit    ?ExecutionLimit   @[omitempty]
+	memory_errors      []MemoryViolation @[omitempty]
+	outcome            Outcome
 }
 
 struct NativeStop {
-	reason    string
-	pcs       []u64
-	load_base ?u64
-	exit_code ?int
+	reason      string
+	pcs         []u64
+	load_base   ?u64
+	exit_code   ?int
+	stack_trace ?DebuggerStack
+}
+
+struct DebuggerStack {
+	debugger string
+	evidence string = 'debugger_at_stop'
+	text     string
+}
+
+@[params]
+struct RunOptions {
+	stack bool
+	fuel  u64
+}
+
+struct ExecutionLimit {
+	kind     string
+	limit    u64
+	evidence string
 }
 
 fn debugger_arg(value string) !string {
@@ -41,18 +65,35 @@ fn read_output(path string) !string {
 	return os.read_file(path)
 }
 
-fn (bundle &Bundle) run(scenario ExecutionCase) !Diagnosis {
+fn (bundle &Bundle) run(scenario ExecutionCase, options RunOptions) !Diagnosis {
+	if options.fuel > 0 && (bundle.image.format != 'wasm' || scenario.harness != '') {
+		return error('--fuel requires a standalone WebAssembly build')
+	}
 	if bundle.image.relocatable || (!bundle.image.runnable && scenario.harness == '') {
 		return error('use resolve for object or raw code, or specify a harness for a shared library')
 	}
 	if bundle.manifest.options.memory {
-		return bundle.run_memory(scenario)
+		report := bundle.run_memory(scenario)!
+		if options.stack && report.kind != 'exited' {
+			return Diagnosis{
+				...report
+				stack_error: 'this sanitizer run uses the stack reported by the sanitizer'
+			}
+		}
+		return report
 	}
 	report := if bundle.image.format == 'wasm' {
-		outcome := bundle.run_wasm(scenario)!
-		bundle.wasm_diagnosis(outcome)
+		outcome := bundle.run_wasm(scenario, fuel: options.fuel)!
+		limited := with_wasm_limit(bundle.wasm_diagnosis(outcome), options.fuel, scenario.timeout_ms)
+		bundle.with_wasm_function_body(limited)
 	} else {
-		bundle.run_debugger(scenario)!
+		bundle.run_debugger(scenario, options.stack)!
+	}
+	if options.stack && report.kind in ['crash', 'timeout', 'fuel_exhausted'] && report.stack_trace == none {
+		return bundle.with_crash_ssa(Diagnosis{
+			...report
+			stack_error: 'no native all-thread backtrace was captured at the stop'
+		})
 	}
 	return bundle.with_crash_ssa(report)
 }
@@ -75,7 +116,7 @@ fn ordinary_diagnosis(outcome Outcome) Diagnosis {
 	}
 }
 
-fn (bundle &Bundle) run_debugger(scenario ExecutionCase) !Diagnosis {
+fn (bundle &Bundle) run_debugger(scenario ExecutionCase, stack bool) !Diagnosis {
 	work := temp_directory()!
 	defer {
 		os.rmdir_all(work) or {}
@@ -94,9 +135,9 @@ fn (bundle &Bundle) run_debugger(scenario ExecutionCase) !Diagnosis {
 		env: env
 	}
 	result, stop := if os.user_os() == 'linux' {
-		run_gdb(program, bundle.artifact, debug_case, input, stdout, stderr)!
+		run_gdb(program, bundle.artifact, debug_case, input, stdout, stderr, stack)!
 	} else {
-		run_lldb(program, bundle.artifact, debug_case, input, stdout, stderr)!
+		run_lldb(program, bundle.artifact, debug_case, input, stdout, stderr, stack)!
 	}
 	outcome := Outcome{
 		...result
@@ -130,14 +171,15 @@ fn (bundle &Bundle) run_debugger(scenario ExecutionCase) !Diagnosis {
 				continue
 			}
 			return Diagnosis{
-				kind:     'crash'
-				reason:   stop.reason
-				address:  hex_address(stop.pcs[0])
-				location: Location{
+				kind:        'crash'
+				reason:      stop.reason
+				address:     hex_address(stop.pcs[0])
+				stack_trace: stop.stack_trace
+				location:    Location{
 					...location
 					precision: if i == 0 { location.precision } else { 'caller_frame' }
 				}
-				outcome:  outcome
+				outcome:     outcome
 			}
 		}
 	} else {
@@ -148,17 +190,22 @@ fn (bundle &Bundle) run_debugger(scenario ExecutionCase) !Diagnosis {
 		reason:         stop.reason
 		address:        if stop.pcs.len > 0 { hex_address(stop.pcs[0]) } else { '' }
 		location_error: location_error
+		stack_trace:    stop.stack_trace
 		outcome:        outcome
 	}
 }
 
-fn run_lldb(program string, artifact string, scenario ExecutionCase, input string, stdout string, stderr string) !(Outcome, NativeStop) {
+fn run_lldb(program string, artifact string, scenario ExecutionCase, input string, stdout string, stderr string, stack bool) !(Outcome, NativeStop) {
 	path := executable('lldb')!
 	launch := 'process launch -i ' + debugger_arg(input)! + ' -o ' + debugger_arg(stdout)! +
 		' -e ' + debugger_arg(stderr)!
 	mut args := ['--no-lldbinit', '--batch', '-o', 'settings set target.disable-aslr false', '-o',
 		launch, '-k', 'thread list', '-k', 'register read pc', '-k', 'image list -h -f', '-k',
-		'bt', '--', program]
+		'bt']
+	if stack {
+		args << ['-k', 'thread backtrace all']
+	}
+	args << ['--', program]
 	args << scenario.argv
 	result := capture(Command{
 		executable: path
@@ -167,7 +214,21 @@ fn run_lldb(program string, artifact string, scenario ExecutionCase, input strin
 		cwd:        scenario.cwd
 		timeout_ms: scenario.timeout_ms
 	})!
-	return result, parse_lldb(result.stdout + '\n' + result.stderr, artifact)
+	if !stack {
+		return result, parse_lldb(result.stdout + '\n' + result.stderr, artifact)
+	}
+	primary, backtrace := debugger_stack(result.stdout, '(lldb) thread backtrace all\n', 'lldb')
+	stop := parse_lldb(primary + '\n' + result.stderr, artifact)
+	return result, NativeStop{ ...stop, stack_trace: backtrace }
+}
+
+fn debugger_stack(stdout string, marker string, debugger string) (string, ?DebuggerStack) {
+	offset := stdout.index(marker) or { return stdout, none }
+	frames := stdout[offset + marker.len..].trim_space()
+	if frames == '' {
+		return stdout[..offset], none
+	}
+	return stdout[..offset], DebuggerStack{ debugger: debugger, text: frames }
 }
 
 fn parse_lldb(output string, artifact string) NativeStop {
@@ -222,7 +283,7 @@ fn shell_argument(value string) !string {
 	return "'" + value.replace("'", "'\\''") + "'"
 }
 
-fn run_gdb(program string, artifact string, scenario ExecutionCase, input string, stdout string, stderr string) !(Outcome, NativeStop) {
+fn run_gdb(program string, artifact string, scenario ExecutionCase, input string, stdout string, stderr string, stack bool) !(Outcome, NativeStop) {
 	path := executable('gdb')!
 	mut run_command := 'run'
 	for arg in scenario.argv {
@@ -230,17 +291,27 @@ fn run_gdb(program string, artifact string, scenario ExecutionCase, input string
 	}
 	run_command += ' < ' + shell_argument(input)! + ' > ' + shell_argument(stdout)! + ' 2> ' +
 		shell_argument(stderr)!
+	mut args := ['--nx', '--batch', '-iex', 'set auto-load off', '-iex', 'set debuginfod enabled off',
+		'-ex', 'set disable-randomization off', '-ex', run_command, '-ex',
+		'printf "VGUARD_PC %p\\n", $pc', '-ex', 'info proc mappings', '-ex', 'bt']
+	if stack {
+		args << ['-ex', 'set print frame-arguments all', '-ex', 'echo \\nVGUARD_STACK_BEGIN\\n',
+			'-ex', 'thread apply all backtrace']
+	}
+	args << ['--args', program]
 	result := capture(Command{
 		executable: path
-		args:       ['--nx', '--batch', '-iex', 'set auto-load off', '-iex',
-			'set debuginfod enabled off', '-ex', 'set disable-randomization off', '-ex', run_command,
-			'-ex', 'printf "VGUARD_PC %p\\n", $pc', '-ex', 'info proc mappings', '-ex', 'bt', '--args',
-			program]
+		args:       args
 		env:        scenario.environment()
 		cwd:        scenario.cwd
 		timeout_ms: scenario.timeout_ms
 	})!
-	return result, parse_gdb(result.stdout + '\n' + result.stderr, artifact)
+	if !stack {
+		return result, parse_gdb(result.stdout + '\n' + result.stderr, artifact)
+	}
+	primary, backtrace := debugger_stack(result.stdout, '\nVGUARD_STACK_BEGIN\n', 'gdb')
+	stop := parse_gdb(primary + '\n' + result.stderr, artifact)
+	return result, NativeStop{ ...stop, stack_trace: backtrace }
 }
 
 fn parse_gdb(output string, artifact string) NativeStop {
@@ -285,9 +356,12 @@ fn parse_gdb(output string, artifact string) NativeStop {
 	}
 }
 
-fn (bundle &Bundle) run_wasm(scenario ExecutionCase) !Outcome {
+fn (bundle &Bundle) run_wasm(scenario ExecutionCase, options RunOptions) !Outcome {
 	path := executable('wasmtime')!
 	mut args := ['run', '-C', 'cache=n']
+	if options.fuel > 0 {
+		args << ['-W', 'fuel=${options.fuel}']
+	}
 	for key, val in scenario.env {
 		args << ['--env', '${key}=${val}']
 	}
@@ -298,6 +372,88 @@ fn (bundle &Bundle) run_wasm(scenario ExecutionCase) !Outcome {
 		...scenario
 		argv: args
 	}.run_binary(path)
+}
+
+fn with_wasm_limit(report Diagnosis, fuel u64, timeout_ms int) Diagnosis {
+	if fuel == 0 {
+		return report
+	}
+	if report.kind == 'timeout' {
+		return Diagnosis{
+			...report
+			execution_limit: ExecutionLimit{
+				kind:     'wall_time_ms'
+				limit:    u64(timeout_ms)
+				evidence: 'vguard_process_timeout'
+			}
+		}
+	}
+	if report.kind != 'crash' {
+		return report
+	}
+	// Wasmtime adds the trap cause as the last nonblank stderr line. Keep
+	// earlier guest output and unrelated traps out of the fuel classification.
+	lines := report.outcome.stderr.trim_space().split_into_lines()
+	if lines.len == 0 {
+		return report
+	}
+	last := lines.last().trim_space()
+	message := 'wasm trap: all fuel consumed by WebAssembly'
+	prefix := last.all_before(': ')
+	if last != message && !(prefix.len > 0 && prefix.bytes().all(it >= `0` && it <= `9`)
+		&& last.all_after(': ') == message) {
+		return report
+	}
+	return Diagnosis{
+		...report
+		kind:            'fuel_exhausted'
+		reason:          'Wasmtime reported exhaustion of the WebAssembly fuel budget'
+		execution_limit: ExecutionLimit{
+			kind:     'wasm_fuel'
+			limit:    fuel
+			evidence: 'wasmtime_cli_trap'
+		}
+	}
+}
+
+fn (bundle &Bundle) with_wasm_function_body(report Diagnosis) Diagnosis {
+	if report.kind != 'fuel_exhausted' || report.location != none || report.address == '' {
+		return report
+	}
+	address := parse_address(report.address) or { return report }
+	for section in bundle.image.wasm_bodies {
+		if address < section.address || address - section.address >= section.size {
+			continue
+		}
+		mut function := ''
+		mut file := ''
+		mut multiple_files := false
+		for range in bundle.ranges {
+			if range.section != section.index || range.location.function == '' {
+				continue
+			}
+			if function != '' && function != range.location.function {
+				return report
+			}
+			function = range.location.function
+			if range.location.file != '' {
+				multiple_files = multiple_files || (file != '' && file != range.location.file)
+				file = range.location.file
+			}
+		}
+		if function != '' {
+			return Diagnosis{
+				...report
+				location: Location{
+					function:  function
+					file:      if multiple_files { '' } else { file }
+					precision: 'function_body'
+				}
+			}
+		}
+		break
+	}
+	return report
 }
 
 fn (bundle &Bundle) wasm_diagnosis(outcome Outcome) Diagnosis {

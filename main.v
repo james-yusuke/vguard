@@ -2,18 +2,22 @@ module main
 
 import json2
 import os
+import strconv
 
 const invalid_command = 'expected a command and input path. See vguard --help'
 
 const usage = 'VGuard traces V binary failures to their source.
 
   vguard build <file-or-directory> --v <compiler> --backend <backend> --target <os/arch>
-               --out <new-directory> [--prod] [--trace-build] [--memory]
+               --out <new-directory> [--prod] [--trace-build] [--trace-ssa] [--memory]
                [--object | --hot-fn <symbol>] [--v-arg <arg>]...
   vguard resolve <build.json> (--address <va> | --pc <pc> --load-base <base> |
                 --offset <bytes> [--section <number>]) [--json]
-  vguard run <build.json> [--case <case.json>] [--json | --ssa]
-  vguard compare <build.json> [--case <case.json>] [--json]
+  vguard run <build.json> [--case <case.json>] [--json | --ssa] [--dataflow] [--stack] [--fuel <units>]
+  vguard compare <build.json> [--reference <build.json>] [--case <case.json>] [--json]
+  vguard regress <series.json> [--case <case.json>] [--json]
+  vguard record <build.json> [--case <case.json>] --out <new-directory>
+  vguard replay <history.json> [--json]
 '
 
 struct Arguments {
@@ -26,11 +30,16 @@ fn parse_options(command string, args []string) !Arguments {
 	valued := match command {
 		'build' { ['--v', '--backend', '--target', '--out', '--hot-fn', '--v-arg'] }
 		'resolve' { ['--address', '--pc', '--load-base', '--offset', '--section'] }
+		'compare' { ['--case', '--reference'] }
+		'run' { ['--case', '--fuel'] }
+		'record' { ['--case', '--out'] }
+		'replay' { []string{} }
 		else { ['--case'] }
 	}
 	boolean := match command {
-		'build' { ['--prod', '--object', '--memory', '--trace-build'] }
-		'run' { ['--json', '--ssa'] }
+		'build' { ['--prod', '--object', '--memory', '--trace-build', '--trace-ssa'] }
+		'run' { ['--json', '--ssa', '--dataflow', '--stack'] }
+		'record' { []string{} }
 		else { ['--json'] }
 	}
 	mut values := map[string]string{}
@@ -50,7 +59,7 @@ fn parse_options(command string, args []string) !Arguments {
 		val := args[index + 1]
 		if option == '--v-arg' {
 			if val in ['-b', '-os', '-arch', '-o', '-output', '-prod', '-vguard-map', '-vguard-trace',
-				'-is_o', '-hot-fn', 'run', 'test', 'self'] {
+				'-vguard-ssa-analysis', '-is_o', '-hot-fn', 'run', 'test', 'self'] {
 				return error('use the VGuard build options instead of --v-arg ${val}')
 			}
 			v_args << val
@@ -61,6 +70,9 @@ fn parse_options(command string, args []string) !Arguments {
 	}
 	if switches['--json'] && switches['--ssa'] {
 		return error('--json and --ssa are mutually exclusive')
+	}
+	if (switches['--dataflow'] || switches['--stack']) && switches['--ssa'] {
+		return error('--dataflow and --stack are available with the terminal and JSON reports')
 	}
 	return Arguments{
 		values:   values
@@ -158,11 +170,34 @@ fn cli(argv []string) !int {
 		print(usage)
 		return 0
 	}
-	if argv.len < 2 || argv[0] !in ['build', 'resolve', 'run', 'compare'] {
+	if argv.len < 2 || argv[0] !in ['build', 'resolve', 'run', 'compare', 'record', 'replay', 'regress'] {
 		return error(invalid_command)
 	}
 	command := argv[0]
 	opts := parse_options(command, argv[2..])!
+	if command == 'replay' {
+		history := open_history(argv[1])!
+		if opts.switches['--json'] {
+			println(json2.encode(history))
+		} else {
+			print(format_history(history))
+		}
+		return 0
+	}
+	if command == 'regress' {
+		series := load_regression_series(argv[1])!
+		report := find_regression(series, load_case(opts.values['--case'])!)!
+		if opts.switches['--json'] {
+			println(json2.encode(report))
+		} else {
+			print(format_regression(report))
+		}
+		return match report.kind {
+			'unchanged' { 0 }
+			'changed' { 1 }
+			else { 2 }
+		}
+	}
 	if command == 'build' {
 		options := BuildOptions{
 			source:   os.real_path(argv[1])
@@ -180,6 +215,7 @@ fn cli(argv []string) !int {
 		}
 		println(build(options, os.abs_path(opts.require('--out')!), false,
 			trace_build: opts.switches['--trace-build']
+			trace_ssa:   opts.switches['--trace-ssa']
 		)!)
 		return 0
 	}
@@ -195,8 +231,20 @@ fn cli(argv []string) !int {
 		return 0
 	}
 	scenario := load_case(opts.values['--case'])!
+	if command == 'record' {
+		println(record_history(bundle, scenario, os.abs_path(opts.require('--out')!))!)
+		return 0
+	}
 	if command == 'run' {
-		report := bundle.run(scenario)!
+		fuel := if '--fuel' in opts.values {
+			parse_fuel(opts.require('--fuel')!)!
+		} else {
+			u64(0)
+		}
+		mut report := bundle.run(scenario, stack: opts.switches['--stack'], fuel: fuel)!
+		if opts.switches['--dataflow'] {
+			report = bundle.with_dataflow(report)
+		}
 		if as_json {
 			println(json2.encode(report))
 		} else if opts.switches['--ssa'] {
@@ -219,7 +267,13 @@ fn cli(argv []string) !int {
 			else { 2 }
 		}
 	}
-	report := compare(bundle, scenario)!
+	mut report := Comparison{}
+	if '--reference' in opts.values {
+		reference := open_bundle(opts.require('--reference')!)!
+		report = compare_recorded(bundle, reference, scenario)!
+	} else {
+		report = compare(bundle, scenario)!
+	}
 	if as_json {
 		println(json2.encode(report))
 	} else {
@@ -230,6 +284,19 @@ fn cli(argv []string) !int {
 		'different' { 1 }
 		else { 2 }
 	}
+}
+
+fn parse_fuel(value string) !u64 {
+	if value == '' || !value.bytes().all(it >= `0` && it <= `9`) {
+		return error('--fuel expects a positive decimal integer')
+	}
+	fuel := strconv.parse_uint(value, 10, 64) or {
+		return error('--fuel is outside the supported unsigned 64-bit range')
+	}
+	if fuel == 0 {
+		return error('--fuel must be greater than zero')
+	}
+	return fuel
 }
 
 fn main() {

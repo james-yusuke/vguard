@@ -45,12 +45,14 @@ struct BuildOptions {
 }
 
 struct Manifest {
-	version         int = map_version
-	options         BuildOptions
-	artifact        string
-	source_map      string
-	compiler_sha256 string
-	source_sha256   string
+	version           int = map_version
+	options           BuildOptions
+	artifact          string
+	source_map        string
+	compiler_sha256   string
+	source_sha256     string
+	ssa_passes_sha256 string @[omitempty]
+	ssa_graph_sha256  string @[omitempty]
 }
 
 struct Location {
@@ -140,6 +142,7 @@ fn artifact_name(options BuildOptions) string {
 @[params]
 struct BuildOutput {
 	trace_build bool
+	trace_ssa   bool
 }
 
 fn build(options BuildOptions, out string, trace bool, output BuildOutput) !string {
@@ -152,6 +155,9 @@ fn build(options BuildOptions, out string, trace bool, output BuildOutput) !stri
 	}
 	if output.trace_build && options.backend !in ['amd64', 'arm64'] {
 		return error('--trace-build requires the amd64 or arm64 native backend')
+	}
+	if output.trace_ssa && options.backend !in ['amd64', 'arm64', 'wasm'] {
+		return error('--trace-ssa requires the amd64, arm64 or wasm SSA backend')
 	}
 	memory_args := if options.memory { memory_compiler_args(options)! } else { []string{} }
 	source_sha256 := source_digest(options.source, out)!
@@ -174,6 +180,9 @@ fn build(options BuildOptions, out string, trace bool, output BuildOutput) !stri
 	}
 	if trace {
 		args << '-vguard-trace'
+	}
+	if output.trace_ssa {
+		args << '-vguard-ssa-analysis'
 	}
 	if options.object {
 		args << '-is_o'
@@ -210,6 +219,11 @@ fn build(options BuildOptions, out string, trace bool, output BuildOutput) !stri
 		trace_saved = true
 	}
 	if result.status != 'exited' || result.exit_code != 0 {
+		if output.trace_ssa && os.is_file(os.join_path(out, map_name + '.passes.jsonl')) {
+			// A compiler failure can leave complete checkpoints worth retaining.
+			trace_saved = true
+			eprintln('VGuard: SSA checkpoints saved in ${out}')
+		}
 		details := result.stdout + result.stderr
 		if result.status == 'exited' && result.exit_code == 2 && details.contains(invalid_command) {
 			return error('--v points to the VGuard executable (${options.compiler}). Pass the V compiler that supports -vguard-map.')
@@ -222,12 +236,24 @@ fn build(options BuildOptions, out string, trace bool, output BuildOutput) !stri
 	if source_digest(options.source, out)! != source_sha256 {
 		return error('source changed during the build')
 	}
+	mut passes_sha256 := ''
+	mut graph_sha256 := ''
+	if output.trace_ssa {
+		passes := os.join_path(out, map_name + '.passes.jsonl')
+		if !os.is_file(passes) || !os.is_file(passes + '.graph.json') {
+			return error('the target compiler did not produce the SSA analysis files')
+		}
+		passes_sha256 = digest(os.read_bytes(passes)!)
+		graph_sha256 = digest(os.read_bytes(passes + '.graph.json')!)
+	}
 	manifest := Manifest{
-		options:         options
-		artifact:        artifact
-		source_map:      map_name
-		source_sha256:   source_sha256
-		compiler_sha256: compiler_sha256
+		options:           options
+		artifact:          artifact
+		source_map:        map_name
+		source_sha256:     source_sha256
+		compiler_sha256:   compiler_sha256
+		ssa_passes_sha256: passes_sha256
+		ssa_graph_sha256:  graph_sha256
 	}
 	read_bundle(manifest, out)!
 	os.write_file(manifest_path, json2.encode(manifest, prettify: true) + '\n') or {
