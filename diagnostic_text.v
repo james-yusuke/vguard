@@ -50,7 +50,12 @@ fn diagnostic_source_lines(location Location, source_error string) ![]string {
 	return lines
 }
 
-fn write_diagnostic_location(mut out strings.Builder, location Location, label string, source_error string) {
+@[params]
+struct DiagnosticLocationOptions {
+	ssa_issue string
+}
+
+fn write_diagnostic_location(mut out strings.Builder, location Location, label string, source_error string, options DiagnosticLocationOptions) {
 	if location.file != '' {
 		address := diagnostic_location_text(location)
 		if location.line <= 0 {
@@ -69,7 +74,11 @@ fn write_diagnostic_location(mut out strings.Builder, location Location, label s
 		out.writeln('  = function: ${location.function}')
 	}
 	if location.ssa_value >= 0 {
-		out.writeln('  = SSA: %${location.ssa_value} ${location.ssa_opcode}'.trim_right(' '))
+		out.write_string('  = SSA: %${location.ssa_value} ${location.ssa_opcode}'.trim_right(' '))
+		if location.ssa_opcode != '' && options.ssa_issue != '' {
+			out.write_string(' << ${ssa_comment_text(options.ssa_issue)}')
+		}
+		out.writeln('')
 	}
 }
 
@@ -145,7 +154,14 @@ fn (bundle &Bundle) format_diagnosis(report Diagnosis) string {
 			} else {
 				'stop mapped here'
 			}
-			write_diagnostic_location(mut out, location, label, bundle.diagnostic_source_error())
+			ssa_issue := if report.kind == 'crash' {
+				ssa_issue_reason(location, report.crash_reason())
+			} else {
+				''
+			}
+			write_diagnostic_location(mut out, location, label, bundle.diagnostic_source_error(),
+				ssa_issue: ssa_issue
+			)
 		}
 		if report.address != '' {
 			out.writeln('  = stop address: ${report.address}')

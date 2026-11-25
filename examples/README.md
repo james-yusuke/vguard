@@ -41,8 +41,9 @@ generated `build.json` to `./vguard run`. Create a fresh `work` directory to reb
 ```
 
 The debugger reports `SIGABRT`. The `^` marker points to [line 7 of `crash.v`](crash.v#L7), the
-first mapped V caller frame. Open the file listed under `SSA report` to find `>>>` above the
-corresponding `call` instruction. The report is saved under `diagnostics/` beside `build.json`.
+first mapped V caller frame. The `SSA` line shows the `call` value ID followed by
+`<< signal SIGABRT (first mapped V caller frame)`. The annotated SSA marks the full instruction
+inline and is saved under `diagnostics/` beside `build.json`.
 The crash examples return exit code 1 when VGuard detects the expected failure.
 
 ## Can you predict where it stops?
@@ -79,17 +80,20 @@ The WebAssembly examples need `wasmtime` on `PATH`.
 
 Compare the source excerpt and `^` marker with your prediction. The terminal shows the same
 SSA function under `SSA (original)` and `SSA (annotated)`. In the rounded divisor example,
-the second `sdiv` gets the inline marker. The SSA value IDs can vary by build.
+the summary names the second `sdiv` and the annotated copy marks its full instruction.
+The compiler's SSA value IDs can vary by build.
 
 ```text
+  = SSA: %5770 sdiv << WebAssembly trap: integer divide by zero
+
 SSA (original)
-  %5770 = sdiv t2 %5768, %5769
+SSA 5770 sdiv typ=2 ops=['5768:instruction:2:', '5769:instruction:2:']
 
 SSA (annotated)
-  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here. error[crash]: WebAssembly trap: integer divide by zero
+SSA 5770 sdiv typ=2 ops=['5768:instruction:2:', '5769:instruction:2:'] << WebAssembly trap: integer divide by zero
 ```
 
-`run` saves both copies in the same crash report directory. Add `--json` to get the
+`run` saves both full dumps in the same crash report directory. Add `--json` to get the
 source location in `location` and the file paths in `ssa_original_file` and `ssa_file`.
 Use `--ssa` to save the annotated SSA directly from standard output.
 

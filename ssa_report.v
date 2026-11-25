@@ -5,13 +5,26 @@ import os
 import rand
 
 struct SsaExcerpt {
-	original  string
-	annotated string
+	original       string
+	annotated      string
+	dump           string
+	annotated_dump string
+}
+
+fn (report Diagnosis) crash_reason() string {
+	return if report.reason == '' { 'program stopped unexpectedly' } else { report.reason }
 }
 
 fn (report Diagnosis) crash_error() string {
-	reason := if report.reason == '' { 'program stopped unexpectedly' } else { report.reason }
-	return 'error[crash]: ${reason}'
+	return 'error[crash]: ${report.crash_reason()}'
+}
+
+fn ssa_issue_reason(location Location, reason string) string {
+	return if location.precision == 'caller_frame' {
+		'${reason} (first mapped V caller frame)'
+	} else {
+		reason
+	}
 }
 
 fn ssa_comment_text(text string) string {
@@ -28,7 +41,7 @@ fn (bundle &Bundle) with_crash_ssa(report Diagnosis) Diagnosis {
 	if location.ssa_value < 0 || location.ssa_opcode == '' {
 		return report
 	}
-	excerpt := bundle.read_crash_ssa(location, report.crash_error()) or {
+	excerpt := bundle.read_crash_ssa(location, report.crash_reason()) or {
 		return Diagnosis{
 			...report
 			ssa_error: err.msg()
@@ -49,7 +62,7 @@ fn (bundle &Bundle) with_crash_ssa(report Diagnosis) Diagnosis {
 	}
 }
 
-fn (bundle &Bundle) read_crash_ssa(location Location, diagnostic string) !SsaExcerpt {
+fn (bundle &Bundle) read_crash_ssa(location Location, reason string) !SsaExcerpt {
 	if bundle.ssa_sha256 == '' {
 		return error('build has no SSA snapshot; rebuild with a compiler that supports SSA snapshots')
 	}
@@ -57,7 +70,7 @@ fn (bundle &Bundle) read_crash_ssa(location Location, diagnostic string) !SsaExc
 	if digest(data) != bundle.ssa_sha256 {
 		return error('SSA snapshot SHA-256 does not match the source map')
 	}
-	return crash_ssa_excerpt(data.bytestr(), location, diagnostic)
+	return crash_ssa_excerpt(data.bytestr(), location, reason)
 }
 
 fn (bundle &Bundle) write_crash_ssa(report Diagnosis, location Location, excerpt SsaExcerpt) !(string, string) {
@@ -77,7 +90,7 @@ fn (bundle &Bundle) write_crash_ssa(report Diagnosis, location Location, excerpt
 	}
 	original_path := os.join_path(dir, 'original.ssa')
 	annotated_path := os.join_path(dir, 'crash.ssa')
-	os.write_file(original_path, excerpt.original)!
+	os.write_file(original_path, if excerpt.dump != '' { excerpt.dump } else { excerpt.original })!
 	os.write_file(annotated_path, format_crash_ssa(report, location, excerpt))!
 	saved = true
 	return original_path, annotated_path
@@ -92,7 +105,8 @@ fn format_crash_ssa(report Diagnosis, location Location, excerpt SsaExcerpt) str
 	if report.ssa_error != '' {
 		header += '; SSA report: ${ssa_comment_text(report.ssa_error)}\n'
 	}
-	return header + '\n' + excerpt.annotated
+	body := if excerpt.annotated_dump != '' { excerpt.annotated_dump } else { excerpt.annotated }
+	return header + '\n' + body
 }
 
 fn (bundle &Bundle) format_ssa_diagnosis(report Diagnosis) string {
@@ -105,7 +119,10 @@ fn (bundle &Bundle) format_ssa_diagnosis(report Diagnosis) string {
 	return bundle.format_diagnosis(report).trim_right('\n').split('\n').map('; ${ssa_comment_text(it)}').join('\n') + '\n'
 }
 
-fn crash_ssa_excerpt(snapshot string, location Location, diagnostic string) !SsaExcerpt {
+fn crash_ssa_excerpt(snapshot string, location Location, reason string) !SsaExcerpt {
+	if snapshot.starts_with('; VGuard SSA v2\n') {
+		return crash_ssa_dump_excerpt(snapshot, location, reason)
+	}
 	// ValueIDs are unique across the module and shared with the byte ranges.
 	prefix := '\n  %${location.ssa_value} = ${location.ssa_opcode} '
 	hit := snapshot.index(prefix) or { return error('mapped instruction is missing from the SSA snapshot') }
@@ -117,9 +134,25 @@ fn crash_ssa_excerpt(snapshot string, location Location, diagnostic string) !Ssa
 	} else {
 		'stop mapped here'
 	}
-	annotation := '  ; <<< ${label}. ${ssa_comment_text(diagnostic)}'
+	annotation := '  ; <<< ${label}. error[crash]: ${ssa_comment_text(reason)}'
 	return SsaExcerpt{
 		original:  snapshot[start + 1..end + 3]
 		annotated: snapshot[start + 1..line_end] + annotation + snapshot[line_end..end + 3]
+	}
+}
+
+fn crash_ssa_dump_excerpt(snapshot string, location Location, reason string) !SsaExcerpt {
+	prefix := '\nSSA ${location.ssa_value} ${location.ssa_opcode} typ='
+	hit := snapshot.index(prefix) or { return error('mapped instruction is missing from the SSA snapshot') }
+	start := snapshot[..hit].last_index('\nSSA function ') or { return error('SSA function header is missing') }
+	line_end := snapshot.index_after('\n', hit + 1) or { return error('SSA instruction line is incomplete') }
+	next_function := snapshot.index_after('\nSSA function ', line_end) or { snapshot.len - 1 }
+	end := next_function + 1
+	marker := ' << ${ssa_comment_text(ssa_issue_reason(location, reason))}'
+	return SsaExcerpt{
+		original:       snapshot[start + 1..end]
+		annotated:      snapshot[start + 1..line_end] + marker + snapshot[line_end..end]
+		dump:           snapshot
+		annotated_dump: snapshot[..line_end] + marker + snapshot[line_end..]
 	}
 }

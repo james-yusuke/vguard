@@ -150,19 +150,24 @@ fn test_companion_compiler_resolves_the_wasmtime_crash_examples() {
 		assert os.dir(os.dir(diagnosis.ssa_file)) == os.join_path(os.dir(manifest), 'diagnostics')
 		assert os.dir(diagnosis.ssa_original_file) == os.dir(diagnosis.ssa_file)
 		original := os.read_file(diagnosis.ssa_original_file) or { panic(err) }
+		compiler_snapshot := os.read_file(bundle.ssa_path) or { panic(err) }
 		ssa_report := os.read_file(diagnosis.ssa_file) or { panic(err) }
-		marker := '  ; <<< stop mapped here. error[crash]: ${diagnosis.reason}'
-		assert original.starts_with('fn "${example.function}"(')
+		marker := ' << ${diagnosis.reason}'
+		assert original == compiler_snapshot
+		assert original.split_into_lines().all(it.starts_with('SSA ') || it == '; VGuard SSA v2')
+		assert original.contains('SSA function ${example.function} ret=')
+		assert original.contains('SSA function main ret=')
 		assert !original.contains(marker)
-		assert ssa_report.contains('fn "${example.function}"(')
-		assert ssa_report.split_into_lines().any(it.starts_with('  %${location.ssa_value} = sdiv ')
+		assert ssa_report.split_into_lines().any(it.starts_with('SSA ${location.ssa_value} sdiv typ=')
 			&& it.ends_with(marker))
+		assert ssa_report.count(marker) == 1
 		assert ssa_report.all_after('\n\n').replace(marker, '') == original
-		assert !ssa_report.contains('fn "main"(')
 		text := bundle.format_diagnosis(diagnosis)
 		assert text.contains('^ stop mapped here')
-		assert text.contains('= SSA: %${location.ssa_value} sdiv')
-		assert text.contains('SSA (original)\n${original}\nSSA (annotated)\n')
+		assert text.contains('= SSA: %${location.ssa_value} sdiv << ${diagnosis.reason}\n')
+		assert text.contains('SSA (original)\nSSA function ${example.function} ret=')
+		assert text.contains('SSA (annotated)\nSSA function ${example.function} ret=')
+		assert !text.contains('SSA function main ret=')
 		assert bundle.format_ssa_diagnosis(diagnosis) == ssa_report
 	}
 }

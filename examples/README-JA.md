@@ -42,8 +42,8 @@ work=$(mktemp -d)
 ```
 
 デバッガーが `SIGABRT` を検知し、V側の呼び出し元である [`crash.v` の7行目](crash.v#L7) に
-`^` が付きます。`SSA report` に表示されたファイルを開くと、対応する `call` 命令の直前に
-`>>>` が付きます。保存先は `build.json` の隣の `diagnostics/` です。
+`^` が付きます。`SSA` の行では `call` の値IDに続いて `<< signal SIGABRT (first mapped V caller frame)` が表示されます。
+命令全体に注釈を付けたSSAは、`build.json` の隣の `diagnostics/` に保存されます。
 クラッシュ例では、意図した停止を検知すると終了コードが 1 になります。
 
 ## どこで止まるか予想する
@@ -79,17 +79,20 @@ Wasmの例には `PATH` 上の `wasmtime` が必要です。
 ```
 
 端末のソース行と `^` を予想と見比べてください。同じ関数が `SSA (original)` と `SSA (annotated)` に表示されます。
-切り捨ての例では、2回目の除算命令 `sdiv` の行末に印が付きます。SSAの値番号はビルドによって変わります。
+切り捨ての例では、要約に2回目の除算命令 `sdiv` が表示され、注釈付きSSAでは命令全体の行末に印が付きます。
+SSAの値番号はVコンパイラが割り当てるため、ビルドによって変わります。
 
 ```text
+  = SSA: %5770 sdiv << WebAssembly trap: integer divide by zero
+
 SSA (original)
-  %5770 = sdiv t2 %5768, %5769
+SSA 5770 sdiv typ=2 ops=['5768:instruction:2:', '5769:instruction:2:']
 
 SSA (annotated)
-  %5770 = sdiv t2 %5768, %5769  ; <<< stop mapped here. error[crash]: WebAssembly trap: integer divide by zero
+SSA 5770 sdiv typ=2 ops=['5768:instruction:2:', '5769:instruction:2:'] << WebAssembly trap: integer divide by zero
 ```
 
-両方のSSAは同じクラッシュレポートのディレクトリに保存されます。`run` に `--json` を付けると、
+両方のダンプ全体は同じクラッシュレポートのディレクトリに保存されます。`run` に `--json` を付けると、
 ソース位置を `location` に、ファイルのパスを `ssa_original_file` と `ssa_file` に出力します。
 `--ssa` を付けると、注釈付きSSAを標準出力から直接保存できます。
 

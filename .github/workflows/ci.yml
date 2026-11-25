@@ -191,12 +191,15 @@ jobs:
                   assert crash["outcome"]["stdout"] == "Finished reading the batch.\n", crash
               ssa = Path(crash["ssa_file"])
               original_ssa = Path(crash["ssa_original_file"])
-              label = ("first mapped V caller frame" if crash["location"]["precision"] == "caller_frame"
-                       else "stop mapped here")
-              marker = f"  ; <<< {label}. error[crash]: {crash['reason']}"
+              frame = (" (first mapped V caller frame)" if crash["location"]["precision"] == "caller_frame"
+                       else "")
+              marker = f" << {crash['reason']}{frame}"
               annotated = ssa.read_text().split("\n\n", 1)[1]
               assert annotated.count(marker) == 1, ssa
               assert annotated.replace(marker, "") == original_ssa.read_text(), original_ssa
+              prefix = f"SSA {crash['location']['ssa_value']} call typ="
+              assert any(line.startswith(prefix) and line.endswith(marker)
+                         for line in annotated.splitlines()), ssa
               shutil.copyfile(ssa, artifacts / f"{name}.ssa")
               shutil.copyfile(original_ssa, artifacts / f"{name}-original.ssa")
 

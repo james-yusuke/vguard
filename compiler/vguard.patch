@@ -368,15 +368,14 @@ index 0000000000..546fa27c14
 +}
 diff --git a/vlib/v/driver/vguard_map_notd_skip_ssa.v b/vlib/v/driver/vguard_map_notd_skip_ssa.v
 new file mode 100644
-index 0000000000..523f4d8762
+index 0000000000..460efadce8
 --- /dev/null
 +++ b/vlib/v/driver/vguard_map_notd_skip_ssa.v
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,64 @@
 +module driver
 +
 +import crypto.sha256
 +import os
-+import strings
 +import v.flat
 +import v.pref
 +import v.ssa
@@ -401,64 +400,18 @@ index 0000000000..523f4d8762
 +		file.close()
 +	}
 +	mut hash := sha256.new()
-+	mut output := strings.new_builder(8192)
-+	output.writeln('; VGuard SSA v1')
++	header := '; VGuard SSA v2\n'.bytes()
++	file.write_full_buffer(header.data, uint(header.len))!
++	hash.write(header)!
 +	for func in m.funcs {
 +		if func.blocks.len == 0 || (hot_fn != '' && hot_fn != func.name) {
 +			continue
 +		}
-+		output.write_string('fn ${vguard_json_string(func.name)}(')
-+		for i, param in func.params {
-+			if i > 0 {
-+				output.write_string(', ')
-+			}
-+			output.write_string('%${param} : t${m.values[param].typ}')
-+		}
-+		output.writeln(') : t${func.typ} {')
-+		for block_id in func.blocks {
-+			output.writeln('bb${block_id}:')
-+			for id in m.blocks[block_id].instrs {
-+				value := m.values[id]
-+				if value.kind != .instruction {
-+					continue
-+				}
-+				instr := m.instrs[value.index]
-+				output.write_string('  %${id} = ${instr.op} t${value.typ}')
-+				for i, operand in instr.operands {
-+					text := if instr.is_block_operand(i) {
-+						'bb${operand}'
-+					} else {
-+						vguard_ssa_operand(m, operand)
-+					}
-+					output.write_string(if i == 0 { ' ${text}' } else { ', ${text}' })
-+				}
-+				output.write_u8(`\n`)
-+			}
-+		}
-+		output.writeln('}')
-+		data := output.str().bytes()
-+		file.write_full_buffer(data.data, uint(data.len))!
-+		hash.write(data)!
-+	}
-+	if output.len > 0 {
-+		// Keep a valid snapshot even for a module without function bodies.
-+		data := output.str().bytes()
++		data := m.dump_function(func).bytes()
 +		file.write_full_buffer(data.data, uint(data.len))!
 +		hash.write(data)!
 +	}
 +	return hash.sum([]u8{}).hex()
-+}
-+
-+fn vguard_ssa_operand(m &ssa.Module, id ssa.ValueID) string {
-+	if id < 0 || id >= m.values.len {
-+		return '%${id}'
-+	}
-+	value := m.values[id]
-+	return match value.kind {
-+		.func_ref, .global { '@${vguard_json_string(value.name)}' }
-+		.constant, .string_literal, .c_string_literal { vguard_json_string(value.name) }
-+		else { '%${id}' }
-+	}
 +}
 +
 +fn vguard_source_ranges(a &flat.FlatAst, ranges []ssa.EmissionRange, hot_fn string) []VGuardSourceRange {
@@ -695,7 +648,7 @@ index e25590886d..404f955a78 100644
  	mut i := 0
  	for i < text.len {
 diff --git a/vlib/v/gen/amd64/gen.v b/vlib/v/gen/amd64/gen.v
-index 0682b6551e..7d0946b0ee 100644
+index 0682b6551e..51428f0f19 100644
 --- a/vlib/v/gen/amd64/gen.v
 +++ b/vlib/v/gen/amd64/gen.v
 @@ -21,6 +21,7 @@ pub:
@@ -706,25 +659,61 @@ index 0682b6551e..7d0946b0ee 100644
  	elf              &elf.ElfObject
  	optimize_runtime bool
  
-@@ -589,7 +590,17 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+@@ -287,7 +288,7 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 	}
+ 	dump_filter := os.getenv('V_X64_DUMP_SSA')
+ 	if dump_filter.len > 0 && func.name.contains(dump_filter) {
+-		g.dump_function(func)
++		eprint(g.m.dump_function(func))
+ 	}
+ 	if func.blocks.len == 0 {
+ 		// Leave unsupported bodies undefined so the linker reports the missing implementation.
+@@ -589,37 +590,17 @@ fn (mut g Gen) gen_func(func ssa.Function) {
  		}
  
  		for val_id in blk.instrs {
-+
+-			g.gen_instr(val_id)
+-		}
+-	}
+-}
+ 
+-fn (g &Gen) dump_function(func ssa.Function) {
+-	eprintln('SSA function ${func.name} ret=${func.typ}')
+-	for param in func.params {
+-		value := g.m.values[param]
+-		typ := g.m.type_store.types[value.typ]
+-		eprintln('SSA param ${param} typ=${value.typ} kind=${value.kind} type_kind=${typ.kind} size=${g.type_size(value.typ)} elem=${typ.elem_type} fields=${typ.fields} names=${typ.field_names}')
+-	}
+-	for block_id in func.blocks {
+-		eprintln('SSA block ${block_id}')
+-		for value_id in g.m.blocks[block_id].instrs {
+-			value := g.m.values[value_id]
+-			if value.kind != .instruction {
+-				eprintln('SSA ${value_id} kind=${value.kind} typ=${value.typ} name=${value.name}')
 +			if !g.m.vguard_enabled {
 +				g.gen_instr(val_id)
-+				continue
-+			}
+ 				continue
+ 			}
+-			instr := g.m.instrs[value.index]
+-			mut operands := []string{}
+-			for i, operand_id in instr.operands {
+-				operand := g.m.values[operand_id]
+-				if instr.is_value_operand(i) {
+-					operands << '${operand_id}:${operand.kind}:${operand.typ}:${operand.name}'
+-				} else {
+-					operands << '${operand_id}'
+-				}
 +			start := g.elf.text_data.len - g.curr_offset
- 			g.gen_instr(val_id)
++			g.gen_instr(val_id)
 +			end := g.elf.text_data.len - g.curr_offset
 +			if end > start {
 +				g.vguard_ranges << g.m.emission_range(func.name, func.name, 0, start, end, val_id)
-+			}
+ 			}
+-			eprintln('SSA ${value_id} ${instr.op} typ=${value.typ} ops=${operands}')
  		}
  	}
  }
-@@ -2772,3 +2783,9 @@ pub fn (mut g Gen) write_and_link(output string) {
+@@ -2772,3 +2753,9 @@ pub fn (mut g Gen) write_and_link(output string) {
  		panic('amd64 link failed:\n${result.output}')
  	}
  }
@@ -1024,6 +1013,53 @@ index a8c6e9561b..c992b9fed0 100644
  	if int(id) < 0 {
  		return b.m.get_or_add_const(b.i64_type, '0')
  	}
+diff --git a/vlib/v/ssa/dump.v b/vlib/v/ssa/dump.v
+new file mode 100644
+index 0000000000..29f803fd9f
+--- /dev/null
++++ b/vlib/v/ssa/dump.v
+@@ -0,0 +1,41 @@
++module ssa
++
++import strings
++
++// dump_function formats SSA for the native backend's debug dump.
++pub fn (m &Module) dump_function(func &Function) string {
++	mut output := strings.new_builder(1024)
++	output.writeln('SSA function ${func.name} ret=${func.typ}')
++	for param in func.params {
++		value := m.values[param]
++		typ := m.type_store.types[value.typ]
++		output.writeln('SSA param ${param} typ=${value.typ} kind=${value.kind} type_kind=${typ.kind} size=${m.type_size(value.typ)} elem=${typ.elem_type} fields=${typ.fields} names=${typ.field_names}')
++	}
++	for block_id in func.blocks {
++		output.writeln('SSA block ${block_id}')
++		for value_id in m.blocks[block_id].instrs {
++			value := m.values[value_id]
++			if value.kind != .instruction {
++				output.writeln('SSA ${value_id} kind=${value.kind} typ=${value.typ} name=${ssa_dump_name(value.name)}')
++				continue
++			}
++			instr := m.instrs[value.index]
++			mut operands := []string{}
++			for i, operand_id in instr.operands {
++				if instr.is_value_operand(i) {
++					operand := m.values[operand_id]
++					operands << '${operand_id}:${operand.kind}:${operand.typ}:${ssa_dump_name(operand.name)}'
++				} else {
++					operands << '${operand_id}'
++				}
++			}
++			output.writeln('SSA ${value_id} ${instr.op} typ=${value.typ} ops=${operands}')
++		}
++	}
++	return output.str()
++}
++
++// String literals can contain newlines. Keep every SSA record on one line.
++fn ssa_dump_name(name string) string {
++	return name.replace_each(['\r', '\\r', '\n', '\\n'])
++}
 diff --git a/vlib/v/ssa/ssa.v b/vlib/v/ssa/ssa.v
 index 4c81b3e1fc..893c38a7de 100644
 --- a/vlib/v/ssa/ssa.v

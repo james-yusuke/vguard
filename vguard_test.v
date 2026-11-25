@@ -32,7 +32,7 @@ fn test_terminal_diagnosis_places_the_caret_after_tabs_and_wide_characters() {
 	assert text.contains('${path}:2:${column}')
 	assert text.contains(' 2 |     println("幅"); stop()\n   | ' + ' '.repeat(19) +
 		'^ first mapped V caller frame')
-	assert text.contains('  = SSA: %5 call')
+	assert text.contains('  = SSA: %5 call << signal SIGABRT (first mapped V caller frame)\n')
 	assert text.contains('  = stop address: 0x1234')
 }
 
@@ -214,9 +214,35 @@ fn test_ssa_crash_annotation_keeps_multiline_errors_in_one_comment() {
 	snapshot := '; VGuard SSA v1\nfn "main"() : t0 {\nbb1:\n  %5 = unreachable t0\n}\n'
 	report := Diagnosis{ kind: 'crash', reason: 'stop\r\nnew line' }
 	location := Location{ ssa_value: 5, ssa_opcode: 'unreachable' }
-	excerpt := crash_ssa_excerpt(snapshot, location, report.crash_error()) or { panic(err) }
+	excerpt := crash_ssa_excerpt(snapshot, location, report.crash_reason()) or { panic(err) }
 	assert excerpt.annotated.split_into_lines().len == excerpt.original.split_into_lines().len
 	assert excerpt.annotated.contains('  %5 = unreachable t0  ; <<< stop mapped here. error[crash]: stop\\r\\nnew line\n')
+}
+
+fn test_native_ssa_dump_marks_one_value_without_changing_other_functions() {
+	snapshot := "; VGuard SSA v2
+SSA function choose_value ret=1
+SSA param 16004 typ=1 kind=argument type_kind=int_t size=8 elem=0 fields=[] names=[]
+SSA block 2151
+SSA 16005 alloca typ=127 ops=[]
+SSA 16006 store typ=0 ops=['16004:argument:1:x', '16005:instruction:127:']
+SSA function main ret=0
+SSA block 2155
+SSA 16485 call typ=0 ops=['16484:func_ref:0:__ssa_init']
+SSA 16030 ret typ=0 ops=[]
+SSA function another ret=0
+SSA block 2160
+SSA 16486 call typ=0 ops=['16484:func_ref:0:__ssa_init']
+"
+	location := Location{ ssa_value: 16485, ssa_opcode: 'call', precision: 'caller_frame' }
+	excerpt := crash_ssa_excerpt(snapshot, location, 'signal SIGABRT') or { panic(err) }
+	marker := ' << signal SIGABRT (first mapped V caller frame)'
+	assert excerpt.original.starts_with('SSA function main ret=0\n')
+	assert excerpt.original.ends_with('SSA 16030 ret typ=0 ops=[]\n')
+	assert excerpt.annotated.contains("SSA 16485 call typ=0 ops=['16484:func_ref:0:__ssa_init']${marker}\n")
+	assert excerpt.dump == snapshot
+	assert excerpt.annotated_dump.count(marker) == 1
+	assert excerpt.annotated_dump.replace(marker, '') == excerpt.dump
 }
 
 fn test_debugger_parsers_keep_only_the_bundle_module_base() {
