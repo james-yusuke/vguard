@@ -121,6 +121,7 @@ jobs:
         env:
           VFLAGS: "-cc clang -gc none"
           VGUARD_TEST_COMPILER: ${{ github.workspace }}/target-v/v-vguard
+          VGUARD_TEST_CHANNEL_FUTEX: ${{ runner.os == 'Linux' && '1' || '' }}
         run: |
           ../host-v/v fmt -verify ./*.v examples/crash.v examples/crashes/*.v examples/hangs/*.v examples/memory_scan/main.v
           sh -n examples/run_crash.sh
@@ -139,7 +140,7 @@ jobs:
           installed="$("$host_v" env VMODULES)/vguard"
           test "$(git -C "$installed" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse HEAD)"
           test -f "$installed/compiler/vguard.patch"
-          "$host_v" -o vguard-vpm "$installed"
+          "$host_v" -prod -o vguard-vpm "$installed"
           ./vguard-vpm --help
 
       - name: Build VGuard and check the examples
@@ -149,7 +150,7 @@ jobs:
         run: |
           work="$RUNNER_TEMP/vguard-checks"
           mkdir -p "$work/artifacts"
-          ../host-v/v -cc clang -gc none -o "$work/vguard" .
+          ../host-v/v -prod -cc clang -gc none -o "$work/vguard" .
           "$work/vguard" --help
           target_v="$GITHUB_WORKSPACE/target-v/v-vguard"
 
@@ -160,7 +161,7 @@ jobs:
             "$work/vguard" build "$source" --v "$target_v" --target "$VGUARD_TARGET" \
               --backend "$VGUARD_BACKEND" --out "$build" --trace-ssa --v-arg -gc --v-arg none
             status=0
-            "$work/vguard" run "$build/build.json" --dataflow --stack --json > "$report" || status=$?
+            "$work/vguard" run "$build/build.json" --dataflow --machine --stack --json > "$report" || status=$?
             cat "$report"
             test "$status" -eq 1
           done
@@ -187,9 +188,20 @@ jobs:
               assert crash["stack_trace"]["evidence"] == "debugger_at_stop", crash
               assert crash["stack_trace"]["text"], crash
               assert any(thread["frames"] for thread in crash["stack_trace"]["threads"]), crash
+              assert any(frame.get("mapped_location", {}).get("ssa_value") == crash["location"]["ssa_value"]
+                         for thread in crash["stack_trace"]["threads"] for frame in thread["frames"]), crash
               assert crash["location"]["file"].endswith("/" + source), crash
               assert crash["location"]["line"] == line, crash
               assert crash["location"]["ssa_opcode"] == "call", crash
+              machine = crash["location"]["machine"]
+              assert machine["evidence"] == "compiler_allocator", machine
+              assert machine["frame_register"] in {"rbp", "x29"}, machine
+              assert all(int(r["start_offset"], 16) < int(r["end_offset"], 16)
+                         for r in machine["code"]), machine
+              assert machine["code"], machine
+              observed = crash["register_snapshot"]
+              assert observed["evidence"] == "debugger_at_stop" and observed["frame"] == 0, observed
+              assert any(r["name"] == machine["frame_register"] for r in observed["registers"]), observed
               flow = crash["ssa_dataflow"]
               root = flow["nodes"][0]
               assert root["id"] == flow["root"] == crash["location"]["ssa_value"], root

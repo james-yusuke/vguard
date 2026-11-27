@@ -80,6 +80,9 @@ fn write_diagnostic_location(mut out strings.Builder, location Location, label s
 		}
 		out.writeln('')
 	}
+	if machine := location.machine {
+		write_machine_mapping(mut out, machine)
+	}
 }
 
 fn write_diagnostic_excerpt(mut out strings.Builder, lines []string, location Location, address string, label string) {
@@ -129,6 +132,9 @@ fn (bundle &Bundle) format_diagnosis(report Diagnosis) string {
 			'crash' {
 				out.writeln(report.crash_error())
 			}
+			'stopped' {
+				out.writeln('VGuard: requested instruction reached')
+			}
 			'exited' {
 				if report.outcome.exit_code == 0 {
 					return 'VGuard: exited successfully\n'
@@ -171,12 +177,42 @@ fn (bundle &Bundle) format_diagnosis(report Diagnosis) string {
 		out.writeln('  = note: ${report.location_error}')
 	}
 	write_dataflow(mut out, report)
+	write_runtime_ssa(mut out, report)
+	write_stopped_ssa(mut out, report)
+	if report.machine_error != '' {
+		out.writeln('  = note: machine mapping unavailable (${report.machine_error})')
+	}
+	if snapshot := report.register_snapshot {
+		out.writeln('  = registers read by ${snapshot.debugger} in frame #0 of the stopped thread')
+		for reading in snapshot.registers {
+			out.writeln('    ${reading.name} = ${reading.value}')
+		}
+	}
 	if limit := report.execution_limit {
 		out.writeln('  = limit: ${limit.kind} = ${limit.limit} (${limit.evidence})')
+	}
+	if hang := report.hang {
+		out.writeln('  = hang evidence: ${hang.evidence}')
+		for wait in hang.cycle {
+			out.writeln('    thread ${wait.thread} waits for mutex ${wait.mutex} held by thread ${wait.owner}')
+		}
+		for wait in hang.channels {
+			out.writeln('    thread ${wait.thread_id} waits on ${wait.operation} at ${wait.resource}')
+		}
+	}
+	if report.hang_error != '' {
+		out.writeln('  = note: ${report.hang_error}')
 	}
 	if stack := report.stack_trace {
 		out.writeln('\nAll-thread debugger backtrace (${stack.debugger})')
 		out.writeln(stack.text)
+		for thread_info in stack.threads {
+			for frame in thread_info.frames {
+				if location := frame.mapped_location {
+					out.writeln('  = thread ${thread_info.number}, frame #${frame.index} ${location_text(location)}')
+				}
+			}
+		}
 	}
 	if report.stack_error != '' {
 		out.writeln('  = note: ${report.stack_error}')
@@ -219,7 +255,9 @@ fn write_memory_diagnostic(mut out strings.Builder, finding MemoryViolation, sou
 	}
 	out.writeln('error[${finding.kind}]: ${access}${size}${address}')
 	if location := finding.location {
-		write_diagnostic_location(mut out, location, 'reported here', source_error)
+		write_diagnostic_location(mut out, location, 'reported here', source_error,
+			ssa_issue: finding.kind
+		)
 	}
 	out.writeln('  = detector: ${detector}')
 	if location := finding.allocation {
@@ -261,7 +299,8 @@ fn write_trace_difference(mut out strings.Builder, diff Divergence, source_error
 }
 
 fn (bundle &Bundle) format_comparison(report Comparison) string {
-	if report.kind == 'equal' && report.build_comparison == none {
+	if report.kind == 'equal' && report.build_comparison == none && report.ssa_comparison == none
+		&& report.ssa_comparison_error == '' {
 		return 'VGuard: target and reference agree\n'
 	}
 	mut out := strings.new_builder(512)
@@ -285,6 +324,7 @@ fn (bundle &Bundle) format_comparison(report Comparison) string {
 			out.writeln('  = first stderr difference at byte ${offset}')
 		}
 	}
+	write_ssa_comparison(mut out, report)
 	if report.target.stdout != report.reference.stdout {
 		out.writeln('  = target stdout: ${json2.encode(report.target.stdout)}')
 		out.writeln('  = reference stdout: ${json2.encode(report.reference.stdout)}')

@@ -2,6 +2,63 @@ module main
 
 import json2
 
+fn test_ssa_structure_compares_contents_after_block_and_value_renumbering() {
+	reference := SsaGraph{
+		instructions: [
+			SsaInstruction{
+				id:       10
+				block:    3
+				function: 'compute'
+				op:       'add'
+				operands: [SsaOperand{ id: 4, role: 'use', kind: 'constant', text: '7' }]
+			},
+			SsaInstruction{
+				id:       11
+				block:    3
+				function: 'compute'
+				op:       'ret'
+				operands: [SsaOperand{ id: 10, role: 'use', kind: 'instruction' }]
+			},
+		]
+		blocks:       [SsaBlock{ id: 3, function: 'compute', instructions: [10, 11] }]
+	}
+	target := SsaGraph{
+		instructions: [
+			SsaInstruction{
+				...reference.instructions[0]
+				id:       90
+				block:    27
+				operands: [SsaOperand{ id: 100, role: 'use', kind: 'constant', text: '7' }]
+			},
+			SsaInstruction{
+				...reference.instructions[1]
+				id:       91
+				block:    27
+				operands: [SsaOperand{ id: 90, role: 'use', kind: 'instruction' }]
+			},
+		]
+		blocks:       [SsaBlock{ id: 27, function: 'compute', instructions: [90, 91] }]
+	}
+	assert compare_function_structure(target, reference).len == 0
+	changed := SsaGraph{
+		...target
+		instructions: [
+			SsaInstruction{
+				...target.instructions[0]
+				operands: [SsaOperand{ id: 100, role: 'use', kind: 'constant', text: '8' }]
+			},
+			target.instructions[1],
+		]
+	}
+	assert compare_opcodes(changed, reference).len == 0
+	differences := compare_function_structure(changed, reference)
+	assert differences.len == 1
+	assert differences[0].function == 'compute'
+	assert differences[0].instruction == 1
+	actual := differences[0].target or { panic('missing changed instruction') }
+	assert actual.operands[0].text == '8'
+}
+
 fn test_backward_ssa_reports_phi_candidates_and_branch_conditions() {
 	graph := SsaGraph{
 		version:      1
@@ -44,6 +101,28 @@ fn test_backward_ssa_reports_phi_candidates_and_branch_conditions() {
 	assert !json2.encode(trace).contains('"ast"')
 }
 
+fn test_ssa_log_replay_rejects_a_change_with_the_wrong_prior_instruction() {
+	original := SsaInstruction{ id: 4, block: 1, function: 'example', op: 'add' }
+	replacement := SsaInstruction{ ...original, op: 'sub' }
+	final := SsaGraph{ instructions: [replacement] }
+	baseline := SsaPassRecord{ pass: 'input', after_count: 1, created: [original] }
+	edit := SsaPassRecord{
+		pass:        'change'
+		after_count: 1
+		changed:     [SsaPassChange{ before: original, after: replacement }]
+	}
+	check_ssa_log_replay([baseline, edit], final) or { panic(err) }
+	incorrect := SsaPassRecord{
+		...edit
+		changed: [SsaPassChange{ before: replacement, after: replacement }]
+	}
+	check_ssa_log_replay([baseline, incorrect], final) or {
+		assert err.msg().contains('change does not match %4')
+		return
+	}
+	assert false, 'the log replay did not validate the prior instruction'
+}
+
 fn test_debugger_stack_keeps_other_threads_out_of_primary_backtrace_parsing() {
 	raw := 'VGUARD_PC 0x150\n#1 0x180 main ()\n\nVGUARD_STACK_BEGIN\nThread 2\n#0 0x700 waiting ()\n#1 0x800 worker ()\n'
 	primary, recorded := debugger_stack(raw, '\nVGUARD_STACK_BEGIN\n', 'gdb')
@@ -53,7 +132,61 @@ fn test_debugger_stack_keeps_other_threads_out_of_primary_backtrace_parsing() {
 	assert stack.threads.len == 1
 	assert stack.threads[0].number == 2
 	assert stack.threads[0].frames.map(it.index) == [0, 1]
-	assert parse_gdb(primary, '/tmp/program').pcs == [u64(0x150), 0x180]
+	stop := parse_gdb(primary, '/tmp/program')
+	assert stop.pcs == [u64(0x150), 0x180]
+	assert (stop.stop_pc or { 0 }) == 0x150
+	frame_only := parse_gdb('#1 0x180 main ()', '/tmp/program')
+	assert frame_only.pcs == [u64(0x180)]
+	assert frame_only.stop_pc == none
+}
+
+fn test_native_stack_maps_each_thread_with_caller_address_adjustment() {
+	stack := DebuggerStack{
+		debugger: 'gdb'
+		text:     'Thread 1\n#0 0x23104 worker ()\n#1 0x23108 caller ()\nThread 2\n#0 0x50000 sleep ()'
+	}
+	threads := parse_debugger_threads(stack.text)
+	bundle := Bundle{
+		image:  Image{
+			format:         'elf'
+			preferred_base: 0x1000
+			sections:       [Section{ index: 1, address: 0x1100, size: 8 }]
+		}
+		ranges: [
+			PlacedRange{
+				section:  1
+				start:    4
+				end:      8
+				location: Location{ function: 'sample', ssa_value: 5, precision: 'source_span' }
+			},
+		]
+	}
+	mapped := bundle.with_mapped_stack(DebuggerStack{ ...stack, threads: threads }, 0x23000)
+	assert mapped.text == stack.text
+	top := mapped.threads[0].frames[0].mapped_location or { panic('top frame was not mapped') }
+	caller := mapped.threads[0].frames[1].mapped_location or { panic('return PC was not adjusted') }
+	assert top.ssa_value == caller.ssa_value
+	assert top.precision == 'source_span'
+	assert caller.precision == 'caller_frame'
+	assert mapped.threads[1].frames[0].mapped_location == none
+}
+
+fn test_debugger_register_readings_are_scoped_to_the_debugger_command() {
+	gdb := 'rbx 0xffff 0\nBEGIN\nrbx 0x12 18\nrbp 0x5000 0x5000\nunknown 0x1 1\nEND\n'
+	registers := debugger_register_snapshot(gdb, '\nBEGIN\n', '\nEND\n', 'gdb', ['rbx', 'rbp']) or {
+		panic('GDB readings were not decoded')
+	}
+	assert registers.debugger == 'gdb'
+	assert registers.evidence == 'debugger_at_stop'
+	assert registers.frame == 0
+	assert registers.registers.map(it.name) == ['rbx', 'rbp']
+	assert registers.registers.map(it.value) == ['0x12', '0x5000']
+	lldb := '(lldb) register read --format hex x19 x29\n x19 = 0x0000000000000007\n fp = 0x5000\n(lldb) quit\n x19 = 0xdead\n'
+	snapshot := debugger_register_snapshot(lldb, '(lldb) register read --format hex x19 x29\n',
+		'', 'lldb', ['x19', 'x29']) or { panic('LLDB reading was not decoded') }
+	assert snapshot.registers.map(it.name) == ['x19', 'x29']
+	assert snapshot.registers.map(it.value) == ['0x7', '0x5000']
+	assert debugger_register_snapshot(gdb, '\nBEGIN\n', '\nMISSING\n', 'gdb', ['rbx']) == none
 }
 
 fn test_debugger_frames_retain_visible_arguments_and_source_positions() {

@@ -17,6 +17,12 @@ fn test_line_reduction_keeps_required_lines_and_reports_budget_exhaustion() {
 	assert limited.attempts == 1
 	assert limited.source == input
 	assert !limited.complete
+	empty := reduce_lines('last line\n', 1, fn (candidate string) !bool {
+		return candidate == ''
+	}) or { panic(err) }
+	assert empty.lines == 0
+	assert empty.attempts == 1
+	assert empty.complete
 }
 
 fn test_fuel_option_requires_positive_u64() {

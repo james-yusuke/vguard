@@ -5,28 +5,78 @@ import os
 const memory_exit_code = 86
 
 fn validate_memory_target(options BuildOptions) ! {
-	if options.backend != 'c' {
-		return error('--memory requires the C backend (${options.backend} has no memory instrumentation)')
+	if options.wasm_heap && (options.backend != 'wasm' || !options.memory) {
+		return error('--wasm-heap requires a standalone Wasm build with memory checking enabled')
+	}
+	if options.object || options.hot_fn != '' || options.args.any(it in ['-shared', '--shared']) {
+		return error('--memory requires a standalone executable')
+	}
+	if options.backend == 'wasm' {
+		if options.target != 'wasm32_emscripten/wasm32' {
+			return error('WebAssembly --memory requires the wasm32_emscripten/wasm32 target')
+		}
+		return
+	}
+	if options.backend !in ['c', 'fastc', 'amd64', 'arm64'] {
+		return error('${options.backend} has no --memory instrumentation')
 	}
 	host := $if amd64 { os.user_os() + '/amd64' } $else $if arm64 { os.user_os() + '/arm64' } $else { '' }
 	if options.target != host || host !in ['linux/amd64', 'linux/arm64', 'macos/arm64'] {
 		return error('--memory requires a matching host target (Linux/amd64, Linux/arm64, or macOS/arm64)')
 	}
-	if options.object || options.hot_fn != '' || options.args.any(it in ['-shared', '--shared']) {
-		return error('--memory requires a standalone executable')
+	if options.backend in ['amd64', 'arm64'] && !options.target.ends_with('/' + options.backend) {
+		return error('--memory requires a native backend matching the target architecture')
 	}
 }
 
 fn memory_compiler_args(options BuildOptions) ![]string {
 	validate_memory_target(options)!
+	if options.backend == 'wasm' {
+		return if options.wasm_heap { ['-vguard-wasm-heap'] } else { []string{} }
+	}
 	if options.args.any(it in ['-cc', '-gc']) {
 		return error('--memory selects Clang and -gc none. Remove the explicit -cc or -gc arguments.')
 	}
 	executable('clang')!
+	mut args := ['-cc', 'clang', '-gc', 'none', '-nocache', '-d', 'no_segfault_handler']
+	if options.backend in ['amd64', 'arm64'] {
+		args << '-vguard-native-memory'
+		return args
+	}
 	sanitizers := '-fsanitize=address,null,array-bounds'
-	return ['-cc', 'clang', '-gc', 'none', '-nocache', '-d', 'no_segfault_handler', '-cflags',
+	args << ['-cflags',
 		sanitizers + ' -fno-sanitize-recover=null,array-bounds -fno-omit-frame-pointer -fno-optimize-sibling-calls',
 		'-ldflags', sanitizers]
+	return args
+}
+
+fn with_wasm_memory(report Diagnosis) Diagnosis {
+	if report.kind != 'crash' {
+		return report
+	}
+	lines := report.outcome.stderr.trim_space().split_into_lines()
+	if lines.len == 0 || wasm_cause_line(lines.last()) != 'wasm trap: out of bounds memory access' {
+		return report
+	}
+	mut address := ''
+	if lines.len > 1 {
+		cause := wasm_cause_line(lines[lines.len - 2])
+		if cause.starts_with('memory fault at wasm address ') {
+			address = sanitizer_address(cause.all_after('memory fault at wasm address '))
+		}
+	}
+	return Diagnosis{
+		...report
+		kind:          'memory_error'
+		reason:        'wasm-linear-memory-out-of-bounds'
+		memory_errors: [MemoryViolation{
+			kind:      'wasm-linear-memory-out-of-bounds'
+			sanitizer: 'wasmtime'
+			message:   'Wasmtime trapped a linear-memory access outside its current bounds'
+			address:   address
+			location:  report.location
+		}]
+	}
 }
 
 fn (bundle &Bundle) run_memory(scenario ExecutionCase) !Diagnosis {
@@ -72,14 +122,23 @@ fn (bundle &Bundle) run_memory(scenario ExecutionCase) !Diagnosis {
 fn (bundle &Bundle) diagnose_memory(outcome Outcome, events []SanitizerEvent) Diagnosis {
 	mut findings := []MemoryViolation{}
 	for event in events {
-		if event.finding.kind == '' {
+		mut finding := event.finding
+		if location := bundle.native_null_location(event) {
+			finding.kind = 'null-pointer-dereference'
+			finding.location = location
+		}
+		if stack_finding := bundle.native_stack_violation(event) {
+			finding = stack_finding
+		}
+		if finding.kind == '' {
 			continue
 		}
-		mut finding := event.finding
 		if finding.location == none {
 			finding.location = bundle.sanitizer_location(event.stack)
 		}
-		finding.allocation = bundle.sanitizer_location(event.alloc_stack)
+		if finding.allocation == none {
+			finding.allocation = bundle.sanitizer_location(event.alloc_stack)
+		}
 		finding.deallocation = bundle.sanitizer_location(event.free_stack)
 		findings << finding
 	}
@@ -120,9 +179,81 @@ fn (bundle &Bundle) diagnose_memory(outcome Outcome, events []SanitizerEvent) Di
 	return ordinary_diagnosis(outcome)
 }
 
+fn (bundle &Bundle) native_null_location(event SanitizerEvent) ?Location {
+	if bundle.ranges.len == 0 || !event.crash || event.stack.len == 0
+		|| !event.finding.message.starts_with('SEGV on unknown address ')
+		|| event.finding.address != '0x0' || event.finding.access !in ['read', 'write'] {
+		return none
+	}
+	location := bundle.sanitizer_location(event.stack[..1]) or { return none }
+	expected := if event.finding.access == 'read' { 'load' } else { 'store' }
+	if location.ssa_opcode == expected {
+		return location
+	}
+	return none
+}
+
+fn (home NativeValueHome) contains_stack_redzone(frame_base u64, address u64) bool {
+	offset := home.object_offset or { return false }
+	size := home.object_size or { return false }
+	before := home.redzone_before or { return false }
+	after := home.redzone_after or { return false }
+	if offset >= 0 || size <= 0 || before <= 0 || after <= 0 {
+		return false
+	}
+	// The compiler's frame offsets are negative. Check all subtractions and
+	// keep the right redzone within the reported frame.
+	depth := u64(-i64(offset))
+	if depth > frame_base || u64(size) > depth || u64(after) > depth - u64(size) {
+		return false
+	}
+	start := frame_base - depth
+	if u64(before) > start {
+		return false
+	}
+	end := start + u64(size)
+	return (address >= start - u64(before) && address < start)
+		|| (address >= end && address < end + u64(after))
+}
+
+fn (bundle &Bundle) native_stack_violation(event SanitizerEvent) ?MemoryViolation {
+	if event.finding.kind != 'use-after-poison' || event.stack.len == 0 {
+		return none
+	}
+	homes := bundle.native_homes or { return none }
+	frame_base := event.frame_base or { return none }
+	address := parse_address(event.finding.address) or { return none }
+	location := bundle.sanitizer_location(event.stack[..1]) or { return none }
+	matches := homes.filter(it.function == location.function && it.contains_stack_redzone(frame_base,
+		address))
+	if matches.len != 1 {
+		return none
+	}
+	mut allocation := ?Location(none)
+	for range in bundle.ranges {
+		if range.location.function == location.function && range.location.ssa_value == matches[0].value
+			&& range.location.ssa_opcode == 'alloca' {
+			allocation = range.location
+			break
+		}
+	}
+	return MemoryViolation{
+		...event.finding
+		kind:       'stack-buffer-overflow'
+		location:   location
+		allocation: allocation
+	}
+}
+
 fn (bundle &Bundle) sanitizer_location(frames []string) ?Location {
 	for frame in frames {
 		address := bundle.sanitizer_frame_address(frame) or { continue }
+		if bundle.ranges.len > 0 {
+			if location := bundle.resolve_address(address) {
+				return location
+			}
+			continue
+		}
 		if location := bundle.debug_location(address) {
 			return location
 		}

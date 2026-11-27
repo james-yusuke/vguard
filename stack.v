@@ -11,17 +11,107 @@ mut:
 }
 
 struct DebuggerFrame {
-	index     int
-	address   string @[omitempty]
-	text      string
-	arguments string          @[omitempty]
-	source    ?DebuggerSource @[omitempty]
+	index           int
+	address         string @[omitempty]
+	text            string
+	arguments       string          @[omitempty]
+	source          ?DebuggerSource @[omitempty]
+	mapped_location ?Location       @[omitempty]
 }
 
 struct DebuggerSource {
 	file   string
 	line   int
 	column int @[omitempty]
+}
+
+fn (bundle &Bundle) with_wasm_backtrace(report Diagnosis) Diagnosis {
+	if report.kind !in ['crash', 'fuel_exhausted', 'memory_error'] {
+		return report
+	}
+	stderr := report.outcome.stderr.trim_space()
+	lines := stderr.split_into_lines()
+	if lines.len == 0 || !wasm_cause_line(lines.last()).starts_with('wasm trap: ') {
+		return report
+	}
+	start := stderr.last_index('wasm backtrace:') or { return report }
+	mut frames := []DebuggerFrame{}
+	for raw in stderr[start + 'wasm backtrace:'.len..].trim_space().split_into_lines() {
+		line := raw.trim_space()
+		words := line.fields()
+		if words.len < 4 || !words[0].ends_with(':') || !words[1].starts_with('0x')
+			|| words[2] != '-' {
+			break
+		}
+		index := debugger_decimal(words[0].trim_string_right(':')) or { break }
+		if index != frames.len {
+			break
+		}
+		pc := parse_address(words[1]) or { break }
+		location := if mapped := bundle.resolve_address(pc) {
+			?Location(if index == 0 {
+				mapped
+			} else {
+				Location{ ...mapped, precision: 'caller_frame' }
+			})
+		} else {
+			bundle.wasm_body_location(pc)
+		}
+		frames << DebuggerFrame{
+			index:           index
+			address:         words[1]
+			text:            line
+			mapped_location: location
+		}
+	}
+	if frames.len == 0 {
+		return report
+	}
+	return Diagnosis{
+		...report
+		stack_trace: DebuggerStack{
+			debugger: 'wasmtime'
+			evidence: 'wasmtime_cli_trap'
+			text:     frames.map(it.text).join('\n')
+			threads:  [
+				DebuggerThread{
+					selected:    true
+					description: 'WebAssembly trap'
+					frames:      frames
+				},
+			]
+		}
+	}
+}
+
+fn (bundle &Bundle) map_debugger_frame(pc u64, base u64, caller bool) !Location {
+	// A saved return address points to the byte after the call.
+	frame_pc := if caller && pc > base { pc - 1 } else { pc }
+	mapped := bundle.resolve_address(bundle.address_from_load_base(frame_pc, base)!)!
+	return if caller { Location{ ...mapped, precision: 'caller_frame' } } else { mapped }
+}
+
+fn (bundle &Bundle) with_mapped_stack(stack DebuggerStack, base u64) DebuggerStack {
+	if bundle.ranges.len == 0 {
+		return stack
+	}
+	mut threads := []DebuggerThread{cap: stack.threads.len}
+	for thread_info in stack.threads {
+		mut frames := []DebuggerFrame{cap: thread_info.frames.len}
+		for frame in thread_info.frames {
+			pc := parse_address(frame.address) or {
+				frames << frame
+				continue
+			}
+			location := bundle.map_debugger_frame(pc, base, frame.index > 0) or {
+				frames << frame
+				continue
+			}
+			frames << DebuggerFrame{ ...frame, mapped_location: location }
+		}
+		threads << DebuggerThread{ ...thread_info, frames: frames }
+	}
+	return DebuggerStack{ ...stack, threads: threads }
 }
 
 fn parse_debugger_threads(trace string) []DebuggerThread {

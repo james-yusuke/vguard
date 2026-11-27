@@ -20,6 +20,7 @@ struct SanitizerEvent {
 mut:
 	finding     MemoryViolation
 	crash       bool
+	frame_base  ?u64
 	stack       []string
 	alloc_stack []string
 	free_stack  []string
@@ -70,15 +71,26 @@ fn asan_event(line string) ?SanitizerEvent {
 		else { '' }
 	}
 	return SanitizerEvent{
-		finding: MemoryViolation{
+		finding:    MemoryViolation{
 			kind:      kind
 			sanitizer: 'asan'
 			message:   message
 			address:   sanitizer_address(message)
 			access:    if kind in ['double-free', 'invalid-free'] { 'free' } else { '' }
 		}
-		crash:   category in ['SEGV', 'BUS', 'ILL', 'FPE', 'ABRT', 'stack-overflow']
+		crash:      category in ['SEGV', 'BUS', 'ILL', 'FPE', 'ABRT', 'stack-overflow']
+		frame_base: asan_frame_base(message)
 	}
+}
+
+fn asan_frame_base(message string) ?u64 {
+	if position := message.index(' bp ') {
+		fields := message[position + ' bp '.len..].fields()
+		if fields.len > 0 && fields[0].starts_with('0x') {
+			return parse_address(fields[0]) or { none }
+		}
+	}
+	return none
 }
 
 fn source_coordinate(text string) ?Location {
@@ -172,6 +184,13 @@ fn parse_sanitizer_log(log string) []SanitizerEvent {
 				.other {}
 			}
 		} else if stack == .access {
+			if event.crash && line.starts_with('The signal is caused by a ')
+				&& line.ends_with(' memory access.') {
+				operation := line.all_after('The signal is caused by a ').all_before(' memory access.')
+				if operation in ['READ', 'WRITE'] {
+					event.finding.access = operation.to_lower()
+				}
+			}
 			fields := line.fields()
 			if fields.len >= 4 && fields[0] in ['READ', 'WRITE'] && fields[1] == 'of'
 				&& fields[2] == 'size' {

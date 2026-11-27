@@ -20,10 +20,13 @@ struct RegressionSample {
 	result        string
 	stdout_sha256 string @[omitempty]
 	stderr_sha256 string @[omitempty]
+	exit_code     ?int   @[omitempty]
 }
 
 struct RegressionReport {
 	evidence                string = 'ordered_repeated_output'
+	method                  string @[omitempty]
+	assumption              string @[omitempty]
 	kind                    string
 	reason                  string @[omitempty]
 	baseline                string
@@ -38,6 +41,11 @@ struct RegressionObservation {
 	outcome Outcome
 	runs    int
 	reason  string
+}
+
+@[params]
+struct ExitComparisonOptions {
+	include_exits bool
 }
 
 fn load_regression_series(path string) !RegressionSeries {
@@ -71,13 +79,13 @@ fn load_regression_series(path string) !RegressionSeries {
 	}
 }
 
-fn observe_regression_build(bundle Bundle, scenario ExecutionCase) RegressionObservation {
+fn observe_regression_build(bundle Bundle, scenario ExecutionCase, options ExitComparisonOptions) RegressionObservation {
 	mut runs := 0
 	first := run_for_comparison(bundle, scenario) or {
 		return RegressionObservation{ reason: err.msg() }
 	}
 	runs++
-	if first.status != 'exited' || first.exit_code != 0 {
+	if first.status != 'exited' || (!options.include_exits && first.exit_code != 0) {
 		return RegressionObservation{
 			runs:   runs
 			reason: 'first execution reported ${first.status} (exit code ${first.exit_code})'
@@ -87,7 +95,7 @@ fn observe_regression_build(bundle Bundle, scenario ExecutionCase) RegressionObs
 		return RegressionObservation{ runs: runs, reason: err.msg() }
 	}
 	runs++
-	if second.status != 'exited' || second.exit_code != 0 {
+	if second.status != 'exited' || (!options.include_exits && second.exit_code != 0) {
 		return RegressionObservation{
 			runs:   runs
 			reason: 'second execution reported ${second.status} (exit code ${second.exit_code})'
@@ -96,13 +104,17 @@ fn observe_regression_build(bundle Bundle, scenario ExecutionCase) RegressionObs
 	if !same_outcome(first, second) {
 		return RegressionObservation{
 			runs:   runs
-			reason: 'the two executions produced different output'
+			reason: if options.include_exits {
+				'the two executions produced different output or exit codes'
+			} else {
+				'the two executions produced different output'
+			}
 		}
 	}
 	return RegressionObservation{ outcome: first, runs: runs }
 }
 
-fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionReport {
+fn find_regression(series RegressionSeries, scenario ExecutionCase, options ExitComparisonOptions) !RegressionReport {
 	if scenario.harness != '' {
 		return error('regress requires standalone builds')
 	}
@@ -110,9 +122,15 @@ fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionR
 	mut source_hash := ''
 	mut last_matching := ''
 	mut samples := []RegressionSample{}
+	evidence := if options.include_exits {
+		'ordered_repeated_output_and_exit_status'
+	} else {
+		'ordered_repeated_output'
+	}
 	for index, item in series.builds {
 		bundle := open_bundle(item.manifest) or { return error('${item.label}: ${err.msg()}') }
-		if bundle.manifest.options.memory || bundle.image.relocatable || !bundle.image.runnable {
+		if bundle.manifest.options.memory || bundle.manifest.options.trace_hangs || bundle.image.relocatable
+			|| !bundle.image.runnable {
 			return error('${item.label}: regress requires a standalone runnable build without sanitizer instrumentation')
 		}
 		hash := bundle.manifest.source_sha256
@@ -122,7 +140,7 @@ fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionR
 		if hash == '' || hash != source_hash {
 			return error('${item.label}: regress requires a common recorded source fingerprint')
 		}
-		observed := observe_regression_build(bundle, scenario)
+		observed := observe_regression_build(bundle, scenario, options)
 		identity := compared_build(bundle.manifest)
 		if observed.reason != '' {
 			samples << RegressionSample{
@@ -132,6 +150,7 @@ fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionR
 				result: 'inconclusive'
 			}
 			return RegressionReport{
+				evidence:      evidence
 				kind:          'inconclusive'
 				reason:        observed.reason
 				baseline:      series.builds[0].label
@@ -156,9 +175,15 @@ fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionR
 			}
 			stdout_sha256: digest(observed.outcome.stdout.bytes())
 			stderr_sha256: digest(observed.outcome.stderr.bytes())
+			exit_code:     if options.include_exits {
+				?int(observed.outcome.exit_code)
+			} else {
+				none
+			}
 		}
 		if !matches {
 			return RegressionReport{
+				evidence:                evidence
 				kind:                    'changed'
 				baseline:                series.builds[0].label
 				last_matching:           last_matching
@@ -171,6 +196,7 @@ fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionR
 		last_matching = item.label
 	}
 	return RegressionReport{
+		evidence:      evidence
 		kind:          'unchanged'
 		baseline:      series.builds[0].label
 		last_matching: last_matching
@@ -181,12 +207,28 @@ fn find_regression(series RegressionSeries, scenario ExecutionCase) !RegressionR
 fn format_regression(report RegressionReport) string {
 	mut out := strings.new_builder(256)
 	out.writeln(match report.kind {
-		'changed' { 'First observed output change' }
-		'unchanged' { 'All recorded builds matched the baseline output' }
+		'changed' {
+			if report.evidence == 'ordered_repeated_output_and_exit_status' {
+				'First observed change in output or exit code'
+			} else {
+				'First observed output change'
+			}
+		}
+		'unchanged' {
+			if report.method == 'compiler_bisection' {
+				'The endpoint compilers matched'
+			} else {
+				'All recorded builds matched the baseline output'
+			}
+		}
 		else { 'Output comparison is inconclusive' }
 	})
+	if report.assumption != '' {
+		out.writeln('  = search assumption: ${report.assumption}')
+	}
 	for sample in report.samples {
-		out.writeln('  ${sample.label} (${sample.build.backend}, ${sample.build.target}, prod=${sample.build.prod}): ${sample.result} after ${sample.runs} executions')
+		exit_note := if code := sample.exit_code { ' (exit code ${code})' } else { '' }
+		out.writeln('  ${sample.label} (${sample.build.backend}, ${sample.build.target}, prod=${sample.build.prod}): ${sample.result} after ${sample.runs} executions${exit_note}')
 	}
 	if report.reason != '' {
 		out.writeln('  = reason: ${report.reason}')

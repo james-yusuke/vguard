@@ -7,9 +7,11 @@ import strings
 const max_dataflow_nodes = 128
 
 struct SsaOperand {
-	id   int
-	role string
-	kind string
+	id            int
+	role          string
+	kind          string
+	text          string @[omitempty]
+	literal_bytes int    @[omitempty]
 }
 
 struct SsaAst {
@@ -30,6 +32,9 @@ struct SsaInstruction {
 	function string
 	op       string
 	typ      int
+	atomic   string @[omitempty]
+	inline   string @[omitempty]
+	asm_id   int    @[omitempty]
 	operands []SsaOperand
 	ast      ?SsaAst @[omitempty]
 }
@@ -86,7 +91,7 @@ fn (bundle &Bundle) read_ssa_graph() !SsaGraph {
 }
 
 fn (bundle &Bundle) with_dataflow(report Diagnosis) Diagnosis {
-	if report.kind !in ['crash', 'fuel_exhausted'] {
+	if report.kind !in ['crash', 'fuel_exhausted', 'memory_error', 'stopped'] {
 		return report
 	}
 	location := report.location or {

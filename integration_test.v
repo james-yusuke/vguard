@@ -39,6 +39,9 @@ fn main() {
 	}
 	println(result(value))
 	if os.args.contains('nonzero') {
+		if selected {
+			exit(6)
+		}
 		exit(5)
 	}
 }
@@ -79,6 +82,42 @@ fn main() {
 	assert ast.line == loc.line
 	assert ast.column == loc.column
 	assert_ast_source(ast, os.real_path(source), 'n * 2')
+	assert !json2.encode(loc).contains('"machine"')
+	mapped := bundle.with_machine_mapping(loc) or { panic(err) }
+	layout := mapped.machine or { panic('missing native code and allocations') }
+	assert layout.evidence == 'compiler_allocator'
+	assert layout.frame_register == if backend == 'arm64' { 'x29' } else { 'rbp' }
+	assert layout.code[0].section == multiply[0].section
+	assert layout.code[0].start_offset == hex_address(multiply[0].start)
+	assert layout.code[0].end_offset == hex_address(multiply[0].end)
+	section := bundle.image.section(multiply[0].section) or { panic(err) }
+	binary := os.read_bytes(bundle.artifact) or { panic(err) }
+	bytes := view(binary, section.offset + multiply[0].start, multiply[0].end - multiply[0].start) or {
+		panic(err)
+	}
+	assert layout.code[0].bytes_hex == bytes.hex()
+	assert layout.homes.len > 0
+	assert bundle.format_resolution(mapped).contains('native code and compiler allocations')
+	stores := bundle.ranges.filter(it.location.function == 'result' && it.location.ssa_opcode == 'store')
+	assert stores.len > 0
+	spill_location := bundle.with_machine_mapping(stores[0].location) or { panic(err) }
+	spill_mapping := spill_location.machine or { panic('missing stack locations') }
+	assert spill_mapping.homes.any(it.frame_offset != none)
+	assert spill_mapping.homes.any(it.object_offset != none)
+
+	object_path := build(BuildOptions{ ...options, object: true, prod: true }, os.join_path(dir,
+		'optimized-object'), false,
+		trace_ssa: true
+	) or { panic(err) }
+	object := open_bundle(object_path) or { panic(err) }
+	optimized := object.ranges.filter(it.location.function == 'result'
+		&& it.location.ssa_opcode in ['mul', 'shl'])
+	assert optimized.len == 1
+	optimized_location := object.with_machine_mapping(optimized[0].location) or { panic(err) }
+	object_mapping := optimized_location.machine or { panic('missing object mapping') }
+	assert object.image.relocatable
+	assert object_mapping.homes.any(it.register != '')
+
 	report := compare(bundle, ExecutionCase{}) or { panic(err) }
 	assert report.kind == 'different'
 	assert report.target.stdout == '14\n'
@@ -98,6 +137,7 @@ fn main() {
 
 	reference_path := build(BuildOptions{ ...options, backend: 'c' }, os.join_path(dir, 'manual-reference'), false) or { panic(err) }
 	reference := open_bundle(reference_path) or { panic(err) }
+	assert reference.native_homes == none
 	explicit := compare_recorded(bundle, reference, ExecutionCase{}) or { panic(err) }
 	assert explicit.kind == 'different'
 	observed := explicit.build_comparison or { panic('missing build comparison') }
@@ -129,6 +169,12 @@ fn main() {
 	assert failed_regression.kind == 'inconclusive'
 	assert failed_regression.reason.contains('exit code 5')
 	assert failed_regression.samples.len == 1
+	failed_case := ExecutionCase{ argv: ['nonzero'] }
+	observed_exits := find_regression(series, failed_case, include_exits: true) or { panic(err) }
+	assert observed_exits.kind == 'changed'
+	assert observed_exits.first_changed == 'changed'
+	assert (observed_exits.samples[0].exit_code or { -1 }) == 5
+	assert (observed_exits.samples[2].exit_code or { -1 }) == 6
 	history_path := record_history(bundle, ExecutionCase{}, os.join_path(dir, 'history')) or { panic(err) }
 	history := open_history(history_path) or { panic(err) }
 	assert history.outcome.stdout == '14\n'
@@ -201,6 +247,54 @@ fn test_wasmtime_fuel_budget_reports_the_stop_with_available_precision() {
 		assert analysis.root == location.ssa_value
 	}
 	assert bundle.format_diagnosis(report).contains('wasm_fuel = 100000')
+}
+
+fn test_wasmtime_stack_maps_trap_and_callers() {
+	compiler := os.getenv('VGUARD_TEST_COMPILER')
+	if compiler == '' {
+		return
+	}
+	executable('wasmtime') or { return }
+	dir := temp_directory() or { panic(err) }
+	defer { os.rmdir_all(dir) or {} }
+	source := os.join_path(dir, 'wasm_stack.v')
+	os.write_file(source, 'module main
+
+@[noinline]
+fn quotient(divisor i64) i64 {
+	return 42 / divisor
+}
+
+@[noinline]
+fn caller(divisor i64) i64 {
+	return quotient(divisor) + 1
+}
+
+fn main() {
+	println(caller(0))
+}
+') or { panic(err) }
+	manifest := build(BuildOptions{
+		source:   source
+		compiler: os.real_path(compiler)
+		backend:  'wasm'
+		target:   'wasm32_emscripten/wasm32'
+	}, os.join_path(dir, 'stack'), false, trace_ssa: true) or { panic(err) }
+	bundle := open_bundle(manifest) or { panic(err) }
+	legacy := bundle.run(ExecutionCase{}) or { panic(err) }
+	assert legacy.kind == 'crash' && legacy.stack_trace == none
+	report := bundle.run(ExecutionCase{}, stack: true) or { panic(err) }
+	assert report.kind == 'crash' && report.address == legacy.address
+	stack := report.stack_trace or { panic(report.outcome.stderr + report.stack_error) }
+	assert stack.debugger == 'wasmtime' && stack.evidence == 'wasmtime_cli_trap'
+	assert stack.threads.len == 1
+	frames := stack.threads[0].frames
+	assert frames.len >= 3
+	mapped := frames[..3].map(it.mapped_location or { Location{} })
+	assert mapped.map(it.function) == ['quotient', 'caller', 'main'], stack.text
+	assert mapped.all(it.file == source)
+	assert mapped[0].ssa_opcode == 'sdiv'
+	assert mapped[1].precision == 'caller_frame'
 }
 
 fn read_test_compile_trace(out string) !CompileTrace {
@@ -326,13 +420,14 @@ fn test_ssa_inlining_records_the_source_of_each_copied_instruction() {
 	os.write_file(source, 'fn twice(n int) int {\n\t#line 90 "generated.dsl"\n\treturn n * 2\n}\n\nfn main() {\n\tprintln(twice(7))\n}\n') or {
 		panic(err)
 	}
-	manifest := build(BuildOptions{
+	options := BuildOptions{
 		source:   source
 		compiler: os.real_path(compiler)
 		backend:  'wasm'
 		target:   'wasm32_emscripten/wasm32'
 		prod:     true
-	}, os.join_path(dir, 'build'), false, trace_ssa: true) or { panic(err) }
+	}
+	manifest := build(options, os.join_path(dir, 'build'), false, trace_ssa: true) or { panic(err) }
 	bundle := open_bundle(manifest) or { panic(err) }
 	pass_path := bundle.ssa_path.trim_string_right('.ssa') + '.passes.jsonl'
 	lines := os.read_lines(pass_path) or { panic(err) }
@@ -355,6 +450,47 @@ fn test_ssa_inlining_records_the_source_of_each_copied_instruction() {
 	assert_ast_source(cloned_ast, source, 'n * 2')
 	jumps := inlining.created.filter(it.function == 'main' && it.op == 'jmp' && it.ast == none)
 	assert jumps.len > 0
+	checked := bundle.read_verified_ssa_trace() or { panic(err) }
+	verification := checked.verification_report()
+	assert verification.final_instructions == checked.graph.instructions.len
+	assert verification.checkpoints.any(it.pass == 'mem2reg' && it.verifier_ran)
+	assert verification.checkpoints.any(it.pass == 'constant_fold' && !it.verifier_ran)
+	assert format_ssa_verification(verification).contains('SSA trace replay matched')
+	partial_path := os.join_path(dir, 'partial.passes.jsonl')
+	os.write_file(partial_path, lines[..2].join('\n') + '\n{"version":1') or { panic(err) }
+	partial := read_partial_ssa_verification(partial_path) or { panic(err) }
+	assert partial.evidence == 'partial_compiler_checkpoint_replay'
+	assert partial.last_checkpoint == 'inline'
+	assert partial.checkpoints.len == 2
+	assert partial.final_instructions == checked.passes[1].after_count
+	assert format_ssa_verification(partial).contains('Partial SSA trace replay reached inline')
+
+	plain_path := build(BuildOptions{ ...options, prod: false }, os.join_path(dir, 'plain'), false,
+		trace_ssa: true
+	) or { panic(err) }
+	plain := open_bundle(plain_path) or { panic(err) }
+	diff := compare_ssa(bundle, plain) or { panic(err) }
+	assert diff.evidence == 'compiler_checkpoints'
+	assert diff.target_order[0] == 'input'
+	assert diff.reference_order == ['not_requested']
+	assert diff.checkpoint_differences.any(it.pass == 'inline' && it.target != none && it.reference == none)
+	assert diff.opcode_differences.any(it.function == 'twice' && it.opcode == 'alloca'
+		&& it.target == 0 && it.reference == 1)
+	assert diff.opcode_differences.any(it.function == 'twice' && it.opcode == 'load'
+		&& it.target == 0 && it.reference == 1)
+	same := compare_ssa(bundle, bundle) or { panic(err) }
+	assert same.checkpoint_differences.len == 0
+	assert same.opcode_differences.len == 0
+	assert same.first_function_differences.len == 0
+
+	comparison := Comparison{ kind: 'equal' }.with_ssa_comparison(bundle, plain)
+	assert comparison.ssa_comparison != none
+	assert comparison.ssa_comparison_error == ''
+	os.write_file(pass_path, '{}\n') or { panic(err) }
+	rejected := Comparison{ kind: 'equal' }.with_ssa_comparison(bundle, plain)
+	assert rejected.kind == 'equal'
+	assert rejected.ssa_comparison == none
+	assert rejected.ssa_comparison_error.contains('SSA pass log SHA-256')
 }
 
 fn test_minimize_preserves_a_successful_wasmtime_output_difference() {

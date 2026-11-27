@@ -17,20 +17,25 @@ struct ExecutionCase {
 }
 
 struct Command {
-	executable        string
-	args              []string
-	cwd               string
-	env               map[string]string
-	stdin_path        string
-	timeout_ms        int = 30000
-	forward_to_stderr bool
+	executable            string
+	args                  []string
+	cwd                   string
+	env                   map[string]string
+	stdin_path            string
+	timeout_ms            int = 30000
+	forward_to_stderr     bool
+	observe_channel_waits bool
+	watched_file          string
+	watched_file_limit    u64
 }
 
 struct Outcome {
-	exit_code int
-	stdout    string
-	stderr    string
-	status    string
+	exit_code     int
+	stdout        string
+	stderr        string
+	status        string
+	pid           int         @[skip]
+	channel_waits map[u64]u64 @[skip]
 }
 
 fn temp_directory() !string {
@@ -111,6 +116,11 @@ fn capture(cmd Command) !Outcome {
 			status = 'output_limit'
 			break
 		}
+		if cmd.watched_file_limit > 0 && os.is_file(cmd.watched_file)
+			&& os.file_size(cmd.watched_file) > cmd.watched_file_limit {
+			status = 'file_limit'
+			break
+		}
 		if elapsed.elapsed().milliseconds() >= cmd.timeout_ms {
 			status = 'timeout'
 			break
@@ -120,6 +130,16 @@ fn capture(cmd Command) !Outcome {
 		}
 		if !read_data {
 			time.sleep(5 * time.millisecond)
+		}
+	}
+	mut channel_waits := map[u64]u64{}
+	if status == 'timeout' && cmd.observe_channel_waits && p.is_alive() && !p.is_pending(.stderr) {
+		if sampled := sample_channel_waits(p.pid) {
+			// If another trace record was written during the samples, we cannot
+			// correlate the observations with the wait boundaries we already read.
+			if !p.is_pending(.stderr) {
+				channel_waits = sampled.clone()
+			}
 		}
 	}
 	if status != '' && p.is_alive() {
@@ -134,10 +154,12 @@ fn capture(cmd Command) !Outcome {
 		status = if p.status == .aborted { 'signal' } else { 'exited' }
 	}
 	return Outcome{
-		exit_code: p.code
-		stdout:    out.str()
-		stderr:    err.str()
-		status:    status
+		exit_code:     p.code
+		stdout:        out.str()
+		stderr:        err.str()
+		status:        status
+		pid:           p.pid
+		channel_waits: channel_waits
 	}
 }
 
@@ -149,7 +171,12 @@ fn (scenario &ExecutionCase) environment() map[string]string {
 	return env
 }
 
-fn (scenario &ExecutionCase) run_binary(path string) !Outcome {
+@[params]
+struct BinaryRunOptions {
+	observe_channel_waits bool
+}
+
+fn (scenario &ExecutionCase) run_binary(path string, options BinaryRunOptions) !Outcome {
 	work := temp_directory()!
 	defer {
 		os.rmdir_all(work) or {}
@@ -157,11 +184,12 @@ fn (scenario &ExecutionCase) run_binary(path string) !Outcome {
 	input := os.join_path(work, 'stdin')
 	os.write_file(input, scenario.stdin)!
 	return capture(Command{
-		executable: path
-		args:       scenario.argv
-		cwd:        scenario.cwd
-		env:        scenario.environment()
-		stdin_path: input
-		timeout_ms: scenario.timeout_ms
+		executable:            path
+		args:                  scenario.argv
+		cwd:                   scenario.cwd
+		env:                   scenario.environment()
+		stdin_path:            input
+		timeout_ms:            scenario.timeout_ms
+		observe_channel_waits: options.observe_channel_waits
 	})
 }

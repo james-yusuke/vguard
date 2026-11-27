@@ -15,7 +15,7 @@ from the installed package.
 ```sh
 v install --git https://github.com/james-yusuke/vguard
 vguard_src="$(v env VMODULES)/vguard"
-v -o vguard "$vguard_src"
+v -prod -o vguard "$vguard_src"
 ./vguard --help
 ```
 
@@ -29,8 +29,11 @@ compilation target because VGuard spans multiple `.v` files.
 
 ```sh
 v run . --help
-v -o vguard .
+v -prod -o vguard .
 ```
+
+`-prod` embeds the tracing helpers so the executable can be used after it is moved
+away from the checkout or the installed sources are removed.
 
 ### Build the target compiler
 
@@ -189,14 +192,36 @@ source locations it could recover. Argument and source information depend on the
 binary's debug metadata. The optional `threads` array groups recognized frames
 by debugger thread number. Frame arguments are preserved as debugger text, and
 source file, line, and column are reported when printed by the debugger.
-Wasm and sanitizer reports can use their existing
-stack information.
+For direct native builds, `mapped_location` also gives the source and SSA
+location recovered from VGuard's source map for each frame it can resolve.
+For direct Wasm builds, `--stack` maps the frames in Wasmtime’s trap backtrace
+to the V source and SSA when a map is available. Wasmtime reports a guest
+frame sequence without host thread IDs or function argument values.
+Sanitizer reports retain their own stack information.
 
 Compare two existing build manifests with `compare --reference other/build.json`
 to run the two binaries with the same case. The report includes build identities
 and the first differing byte in stdout and stderr. For a reproducible difference,
 VGuard also attempts to compare scalar checkpoints when both manifests point to
 the same source and their original compiler binaries are available.
+
+Add `--ssa-diff` with `--reference` when both builds recorded `--trace-ssa`.
+VGuard verifies the pass logs and graphs against the manifests, then reports
+checkpoint order, changes in pass and verifier counts, and final opcode counts.
+It also shows the first difference in each named function when comparing
+blocks and instructions in emission order. The comparison uses function-local
+positions for SSA definitions and branch targets, and reports recorded constants
+and symbols when available. These are compile-time observations.
+The execution result and its exit status still describe the outcome comparison.
+
+`verify-ssa <build.json>` checks the hashes and replays instruction edits
+from the baseline through the final graph without running the target.
+It reports each checkpoint's compiler-verifier status and recorded findings.
+Exit status 1 indicates a recorded critical finding. Exit status 2 indicates
+a trace verification or input error.
+If compilation stopped before a manifest was written, run
+`verify-ssa <passes.jsonl> --partial` on the retained log. It replays complete checkpoints
+through the last recorded pass and validates the edits within the log.
 
 Use `regress` to locate the first observed output change in an ordered series of
 existing builds. List the baseline first. Manifest paths are relative to the series file.
@@ -215,14 +240,76 @@ share a source fingerprint. VGuard checks stdout and stderr twice per build
 and follows the listed order. It reports `changed` at the first reproducible
 difference or `inconclusive` at an unstable or unsuccessful execution. Exit codes
 are 0 for `unchanged`, 1 for `changed`, and 2 for `inconclusive` or an error.
+Use `regress --include-exits` to also compare reproducible nonzero exit codes.
+
+`regress --compiler-series` rebuilds the same source with the compiler versions
+needed for a binary search. Give it a `build` object with `source`, `backend`,
+`target` and any `args`, and an ordered `compilers` array of `{ "label": "…", "path": "…" }`
+entries. It runs each tested version twice. The reported boundary assumes the
+behavior changes once in the supplied order.
 
 `record <build.json> --out <new-directory>` records scalar assignments, branches,
 and returns from a standalone program with a successful, matching baseline.
 `record --calls` also records named V function entries in the instrumented source
 file or the top-level source files of the build directory. Update the compiler
 patch and rebuild the compiler and target before using this option.
+`record --memory-accesses` uses Clang on a matching Linux or macOS C or FastC build.
+The same history records generated C loads and stores instrumented by Clang,
+including runtime code. Each event records its access size, address, process,
+thread, and image-relative return address from the instrumentation callback.
+The history identifies the instrumented binary by SHA-256. Coverage follows
+the accesses retained by Clang and instrumented code linked into the binary.
+[Clang SanitizerCoverage](https://clang.llvm.org/docs/SanitizerCoverage.html#tracing-data-flow)
+
 `replay <new-directory>/history.json` reads those recorded events offline in order.
+
+`record --runtime-ssa` saves native SSA events and their graph from a matching
+Linux or macOS native build. `replay --at-event N` restores the observed scalar
+values, CFG edges, and memory observations in the selected activation through
+event N. The replay reads the saved data without running the target.
 Use the existing `--case` option with `record` to select inputs.
+
+Use `record --wasi-stdio` with a direct Wasm build to preserve the module,
+the explicit arguments, environment and stdin, and the observed output
+streams. The recording checks that two successful runs produce the same
+output. `replay --reexecute` verifies the saved module and Wasmtime executable
+hashes, runs the saved input, and reports whether stdout, stderr and the
+exit status match. This mode supports standard WASI preview1 stdio, args,
+environment and exit imports. It uses unshared memories without host file,
+clock or networking imports.
+
+### Record and replay a Linux VM
+
+Use `--qemu-kernel` with a standalone Linux AMD64 or ARM64 ELF build.
+VGuard packages the original executable, explicit case inputs and guest
+libraries with the kernel and QEMU event log. It replays the recording before
+saving it, comparing both output streams and the guest's exit status or signal.
+A build with `--trace-runtime` also retains the verified native SSA event
+stream for `replay --at-event N`. [QEMU record and replay](https://www.qemu.org/docs/master/system/replay.html)
+
+```sh
+./vguard record ./build/build.json --qemu-kernel ./vmlinuz \
+  --case ./case.json --out ./vm-record
+./vguard replay ./vm-record/history.json --reexecute --json
+```
+
+Install the matching `qemu-system-x86_64` or `qemu-system-aarch64`.
+The default guest uses an initramfs. For a kernel with built-in ext4 and
+virtio block support, `--qemu-rootfs ext4` uses `mke2fs`.
+On matching Linux hosts, VGuard builds the launcher with `cc -static`
+and can discover glibc dependencies through the ELF interpreter. When
+recording across hosts, use `--qemu-launcher` with a static Linux ELF built
+from `compiler/qemu_guest.c` and `--qemu-libraries` with a JSON object
+mapping each absolute guest library path to its host file.
+
+The guest uses one virtual CPU, 512 MiB of memory, and no network device.
+The case's `cwd` is an absolute guest directory and defaults to `/vguard`.
+`timeout_ms` covers guest boot and execution. Replay verifies the saved
+kernel, image, log, and QEMU executable hashes. Streams with invalid UTF-8
+retain their exact bytes in the history's `qemu_linux.binary_streams` and
+the replay report's `expected_binary` and `actual_binary` fields.
+
+### Reduce a reproducer
 
 `minimize` tries line deletions in a copy of a common, single V source file.
 It requires two existing builds whose compiler and source fingerprints still match
@@ -236,14 +323,154 @@ their manifests and whose successful outputs are repeatable and different.
 The output directory contains the reduced `.v` file and `reduction.json`.
 Both configurations are rebuilt and run twice to verify the final result.
 `single_line_deletions_checked` indicates whether the search checked all single-line
-deletions in its final candidate. A nonzero exit or runtime interruption stops reduction.
+deletions in its final candidate. Use `minimize --include-exits` to preserve
+both builds' repeatable output and exit codes, including nonzero exits. A
+runtime interruption stops reduction.
+
+`minimize --panic --out <new-directory>` reduces a single V source file while
+preserving its repeatable V panic message and exit status. It verifies the
+result on two final runs.
+
+`minimize --arithmetic-trap --out <new-directory>` reduces a single source
+file for a direct Wasm build that traps on integer division by zero or integer
+division overflow. It preserves the observed Wasmtime trap, the SSA operation,
+its function and source statement, then verifies the result in two final runs.
 
 Run `python3 benchmarks/ssa_trace.py --help` for the build-time benchmark. It
-measures elapsed time, trace size, and equality of emitted binary bytes.
+measures elapsed time, trace size, source map growth, and equality of emitted
+binary bytes.
 
-The current diagnostics cover the SSA pipeline and selected runtime observations.
-CPU register and stack-slot mappings, native Shadow Memory, instruction-level
-memory replay, and deadlock classification remain outside this implementation.
+### C and FastC LLVM optimization passes
+
+On Linux or macOS, C and FastC builds with `--trace-ssa` save IR from the Clang
+invocations that produce the executable. `--ssa-function` accepts a comma-separated
+list of LLVM symbols and defaults to `main,main__main`. A function `compute`
+in the main V module can use `--ssa-function compute,main__compute` when comparing
+these backends. Use the default `clang` or specify a Clang executable with
+`--v-arg -cc --v-arg <path>`. Linux builds that select LLVMgold also record its
+LTO passes as `link_time`. [LLVM IR dump options](https://llvm.org/docs/DebuggingLLVM.html#understanding-the-source-of-the-issue)
+
+`program.llvm-ssa.json` indexes the raw logs under `llvm-ssa/`. `verify-ssa`
+checks the digests and reports the log lines, IR digests, and instruction line
+additions and removals for matched before-and-after dumps. Instruction lines
+are compared as printed, so renamed SSA values can contribute to the counts.
+The report also counts unpaired dumps and identifies partial captures. After
+a build failure that leaves the index, `verify-ssa program.llvm-ssa.json --partial`
+reads the available logs.
+
+`compare --reference ... --ssa-diff` puts C and FastC comparisons in
+`llvm_ssa_comparison` when both used the same symbol selection. It matches
+translation units by basename, then matches the phase, pass, scope, and occurrence.
+
+### Native code and register allocation
+
+Build with the AMD64 or ARM64 backend and `--trace-ssa` to record the
+backend's register assignments and frame layout. Use `--machine` with
+`resolve` or `run` to display the final section-relative code range of the
+mapped SSA instruction and the recorded locations of its result and operands.
+The report includes up to 128 raw bytes per range from the verified artifact.
+
+```sh
+./vguard build examples/crashes/deferred_validation.v --v ../v/v-vguard \
+  --backend arm64 --target macos/arm64 --trace-ssa --out ./machine-build
+./vguard run ./machine-build/build.json --machine --stack
+```
+
+`location.machine` uses `compiler_allocator` evidence. Each register is a
+compiler assignment. Frame offsets are relative to `rbp` on AMD64 and `x29`
+on ARM64. A stack object records the storage addressed by an `alloca` value.
+If the ARM64 backend aligns that address dynamically, the report includes
+the required alignment.
+
+On a native stop, `run --machine` also captures integer registers
+via GDB or LLDB as `register_snapshot` with `debugger_at_stop` evidence. That
+snapshot is from the stopped thread's top frame. A mapped V caller can be a
+different frame. Recovering live SSA values from the snapshot requires
+instruction-level liveness information. On Linux AMD64 and ARM64, build with
+`--trace-ssa` and use `run --recover-ssa` with a Python-enabled GDB to read
+live scalar register and stack homes at a stop. `--at <linked-address>` stops
+at a chosen machine instruction boundary. In a function prologue, the compiler
+records when an argument moves from its incoming ABI register or stack slot
+to its final home. The report identifies which location supplied the value.
+In a return sequence, homes remain eligible through the instruction boundary
+where frame restoration begins. After frame restoration starts, VGuard reads
+integer, pointer, and floating-point results from the backend's return register
+when the compiler identifies the corresponding SSA operand. ARM64's return
+sequence converts `f32` twice. Zero and NaN results from that sequence cannot
+establish the operand's original bits, so those samples are omitted.
+Integer and null operands with a compiler-recorded width are reported as
+`compiler_ssa_literal`. With a `--trace-runtime` build and both
+`--runtime-ssa` and `--recover-ssa`, VGuard can fill missing instruction
+inputs from earlier samples after verifying the Linux thread, frame, and SSA
+instruction. These entries use `native_ssa_sample_before_instruction` and
+include the event number.
+VGuard can also reconstruct an input from bitwise operations over
+compiler literals and debugger-read argument slots. It reports that calculation
+as `derived_ssa_integer`. An observed runtime sample takes precedence.
+Values outside these cases require a readable home at the stop.
+Combine `--stack` to read known homes in additional unwindable frames.
+The compiler also records boundaries inside conditional branch sequences where
+the incoming SSA homes remain intact, including a stub that starts on a
+different branch after an earlier stub writes phi values.
+
+### Inspect runtime SSA values, branches, and memory dependencies
+
+Build with `--trace-runtime` and run with `--runtime-ssa` on a matching
+Linux/AMD64, Linux/ARM64 or macOS/ARM64 host. Runtime tracing enables
+`--trace-ssa` and can be combined with `--memory`. The instrumented functions
+come from the requested input source.
+
+The `runtime_ssa` report includes scalar values sampled in the selected
+activation, CFG edges taken before the stop, and dependencies through observed
+definitions and phi inputs. For a Linux GDB stop, `stop_correlation` reports
+the kernel thread and the frame address when GDB can read it. VGuard matches
+the thread to its recorded lifetime before selecting the activation.
+`memory_order` includes recent scalar load and store intervals
+and selected pairs of conflicting accesses across threads. `completed_before_start`
+means the earlier access's completion hook was recorded before the later access's
+begin hook. `intervals_intersect` means the recorded intervals overlap or the
+earlier interval has no recorded end. A cross-thread dependency inferred from
+address overlap carries `inferred_from_ordered_address_overlap` evidence. A pair
+whose order follows a recorded POSIX mutex handoff on Linux also carries
+`recorded_mutex_happens_before`. `thread_generation` distinguishes different
+threads even when their native thread handles are reused.
+
+On Linux, linker hooks for `malloc`, `calloc`, `realloc`, and `free` give each
+observed heap allocation a generation. `memory_order.reuse` identifies addresses
+with a recorded retirement and a later allocation. A new generation keeps reads
+separate from writes recorded before the address was reused. Calls made within
+shared libraries can bypass these hooks. The report retains up to 512 entries
+in each memory list and marks truncation.
+
+The recorder retains up to 65,536 events. `runtime_ssa_error` explains when
+the trace reaches its limit before the stop can be verified, or when several
+threads executed the mapped instruction and the stopped thread is unavailable.
+
+### Detect lock deadlocks and repeated loops
+
+On Linux or macOS, build a standalone executable with `--backend c --trace-hangs`.
+Run it with `run --hangs --case case.json` and set the case's `timeout_ms`.
+At timeout, the report identifies a `deadlock` from a cycle in the recorded
+`sync.Mutex` and `sync.RwMutex` ownership and wait events, or an
+`infinite_loop` from a recorded entry into a statically proven loop. This covers
+unconditional loops and conditions that can be proven true from Boolean literals,
+including short-circuit expressions. The loop body may be empty, contain an
+unlabeled `continue`, or follow constant branches that can only start the next
+iteration. For constant branches, `hang.evidence` records the observed loop entry
+and `hang.proof_evidence` identifies the compiler's control-flow proof. Other
+loops retain `timeout` and include observed repetitions when no loop exit was seen.
+Pending sends, receives and selects appear under
+`hang.channels` when they have begun a channel semaphore wait at timeout.
+On Linux, VGuard reports a process-local `deadlock` when two kernel samples
+agree and every thread is blocked on the exact process-private channel futex
+from its pending trace record, with no deadline. The evidence is
+`linux_private_channel_futexes`. Timed waits and incomplete samples retain
+`timeout`. [Linux syscall observations](https://man7.org/linux/man-pages/man5/proc_pid_syscall.5.html)
+For mixed channel and lock waits, each observed lock futex must fall within
+the recorded pthread object and all its observed owners must also be blocked.
+The report records those ownership edges in `hang.lock_waits` with
+`linux_private_channel_and_lock_futexes` evidence.
+The JSON `hang` field includes the recorded evidence. These results exit with code 2.
 
 ### WebAssembly execution limits
 
@@ -257,7 +484,7 @@ during finite computation. [Wasmtime fuel accounting](https://docs.wasmtime.dev/
 
 ## Memory safety checks
 
-Build a standalone executable with the C backend and `--memory`, then run it with the
+Build a standalone executable with the C or FastC backend and `--memory`, then run it with the
 same JSON case format. On macOS/arm64, for example, use these commands from the repository root.
 
 ```sh
@@ -265,8 +492,8 @@ same JSON case format. On macOS/arm64, for example, use these commands from the 
 ./vguard run ./guard-memory/build.json --case ./case.json --json
 ```
 
-The normal debugger path observes stops and cannot see an invalid access that leaves the process
-running. A memory build uses Clang AddressSanitizer for checks on heap, stack, and global accesses,
+The normal debugger path observes stops. A C memory build uses Clang AddressSanitizer
+for checks on heap, stack, and global accesses,
 heap use-after-free, double free, and invalid free. Clang UndefinedBehaviorSanitizer checks
 null dereferences and array bounds that Clang can determine. VGuard reads sanitizer diagnostics
 independently of the process exit status. The checks can report a violation before a CPU fault.
@@ -281,10 +508,38 @@ writes. UBSan array bounds reports can omit the operation and address.
 
 `--memory` selects Clang and `-gc none`. It supports Linux/amd64, Linux/arm64, and macOS/arm64
 with a matching host, Clang, and its sanitizer runtimes. Source lookup uses `llvm-symbolizer`,
-`addr2line` on Linux, or `atos` on macOS. Memory reports use C backend debug information, so SSA
-IDs are unavailable in this mode. The ordinary native and WebAssembly crash paths still provide
-SSA lookup. FastC, direct native and WebAssembly builds, Windows, and shared-library harnesses
-are outside the memory mode's coverage.
+`addr2line` on Linux, or `atos` on macOS for a C backend build. These C reports provide V source
+locations when the debug information is available.
+
+### Direct native memory checks
+
+Select `--backend amd64` or `--backend arm64` for a direct native
+`--memory` build. The code generator adds ASan shadow checks before scalar
+SSA loads and stores, aggregate SSA transfers, and atomic accesses.
+The ASan allocator supplies heap redzones and tracks
+standard allocation and free calls. The compiler adds stack redzones for
+`alloca` objects aligned to 16 bytes or less and clears their shadow state on
+normal return. The compiler also registers defined globals and their right
+redzones with the ASan runtime at main entry. When a reported address matches an object's stack redzone,
+VGuard reports its `alloca` site alongside the invalid access. The SSA source
+map supplies V locations and annotated SSA for mapped native findings.
+An ASan fault report at address zero is classified as a null dereference when
+the reported access matches a mapped native load or store.
+
+Stack redzones cover objects aligned to 16 bytes or less.
+Memory mode excludes Windows and shared-library harnesses.
+
+For Wasm, `--memory` classifies a Wasmtime linear-memory bounds trap as
+`wasm-linear-memory-out-of-bounds`. It reports the faulting linear address and
+mapped V source when available. Build with `--backend wasm --wasm-heap` to
+check individual allocations from the direct backend's heap allocator.
+The compiler checks emitted loads, stores, copies, fills, and buffers passed
+to its memory comparison and output intrinsics. An unexported Wasm memory keeps
+allocation extents and lifetimes separate from application data. The report
+verifies the dedicated trap in the binary before classifying a heap finding.
+The check uses the allocation that owns the effective starting address.
+Stack and static accesses retain Wasmtime's linear-memory checking, and this
+option covers the compiled module's allocator and memory operations.
 
 Coverage depends on the paths exercised by the case. Assembly, uninstrumented libraries, custom
 allocators without ASan support, and accesses that remain inside a valid allocation can escape

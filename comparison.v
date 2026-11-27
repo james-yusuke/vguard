@@ -11,6 +11,7 @@ struct TraceEvent {
 	column int
 	kind   string
 	value  string
+	memory ?MemoryAccess @[omitempty]
 }
 
 struct Divergence {
@@ -20,12 +21,15 @@ struct Divergence {
 }
 
 struct Comparison {
-	kind             string
-	target           Outcome
-	reference        Outcome
-	divergence       ?Divergence
-	location_error   string
-	build_comparison ?BuildComparison @[omitempty]
+	kind                 string
+	target               Outcome
+	reference            Outcome
+	divergence           ?Divergence
+	location_error       string
+	build_comparison     ?BuildComparison @[omitempty]
+	ssa_comparison       ?SsaComparison   @[omitempty]
+	llvm_ssa_comparison  ?LlvmComparison  @[omitempty]
+	ssa_comparison_error string           @[omitempty]
 }
 
 struct ComparedBuild {
@@ -216,7 +220,12 @@ fn trace_difference(initial Comparison, options BuildOptions, reference_opts Bui
 	return first_divergence(target_events, reference_events)
 }
 
-fn split_trace(stderr string) !(string, []TraceEvent) {
+@[params]
+struct TraceReadOptions {
+	memory_accesses bool
+}
+
+fn split_trace(stderr string, options TraceReadOptions) !(string, []TraceEvent) {
 	mut events := []TraceEvent{}
 	mut output := []string{}
 	mut next := 0
@@ -228,6 +237,11 @@ fn split_trace(stderr string) !(string, []TraceEvent) {
 			return error('the last trace event was incomplete')
 		}
 		fields := stderr[payload..end].trim_right('\r').split('\t')
+		if options.memory_accesses && fields[0] == 'memory' {
+			events << read_memory_access(fields)!
+			next = end + 1
+			continue
+		}
 		if fields.len != 5 || fields[1].int() <= 0 || fields[2].int() <= 0 || fields[4] == '' {
 			return error('malformed VGuard trace event')
 		}

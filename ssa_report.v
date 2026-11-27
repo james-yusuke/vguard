@@ -16,7 +16,8 @@ fn (report Diagnosis) crash_reason() string {
 }
 
 fn (report Diagnosis) crash_error() string {
-	return 'error[crash]: ${report.crash_reason()}'
+	kind := if report.kind == 'memory_error' { 'memory_error' } else { 'crash' }
+	return 'error[${kind}]: ${report.crash_reason()}'
 }
 
 fn ssa_issue_reason(location Location, reason string) string {
@@ -34,7 +35,7 @@ fn ssa_comment_text(text string) string {
 }
 
 fn (bundle &Bundle) with_crash_ssa(report Diagnosis) Diagnosis {
-	if report.kind != 'crash' {
+	if report.kind !in ['crash', 'memory_error'] {
 		return report
 	}
 	location := report.location or { return report }
@@ -97,9 +98,11 @@ fn (bundle &Bundle) write_crash_ssa(report Diagnosis, location Location, excerpt
 }
 
 fn format_crash_ssa(report Diagnosis, location Location, excerpt SsaExcerpt) string {
-	mut header := '; VGuard crash SSA\n; ${ssa_comment_text(report.crash_error())}\n'
+	label := if report.kind == 'memory_error' { 'memory error' } else { 'crash' }
+	mut header := '; VGuard ${label} SSA\n; ${ssa_comment_text(report.crash_error())}\n'
 	if report.address != '' {
-		header += '; Stopped at: ${ssa_comment_text(report.address)}\n'
+		address_label := if report.kind == 'memory_error' { 'Access address' } else { 'Stopped at' }
+		header += '; ${address_label}: ${ssa_comment_text(report.address)}\n'
 	}
 	header += '; V source: ${ssa_comment_text(location_text(location))}\n'
 	if report.ssa_error != '' {

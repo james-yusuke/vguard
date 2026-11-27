@@ -1,5 +1,381 @@
+diff --git a/vlib/sync/channels.c.v b/vlib/sync/channels.c.v
+index f5da4067cc..ba4da4653b 100644
+--- a/vlib/sync/channels.c.v
++++ b/vlib/sync/channels.c.v
+@@ -379,7 +379,13 @@ fn (mut ch Channel) try_push_impl(src voidptr, no_block bool) ChanState {
+ 			if no_block {
+ 				return .not_ready
+ 			}
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(ch), `S`, &ch.writesem)
++			}
+ 			ch.writesem.wait()
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(ch), `s`, &ch.writesem)
++			}
+ 		}
+ 		if C.atomic_load_u16(&ch.closed) != 0 {
+ 			ch.writesem.post()
+@@ -431,7 +437,13 @@ fn (mut ch Channel) try_push_impl(src voidptr, no_block bool) ChanState {
+ 				if got_im_sem {
+ 					got_im_sem = false
+ 				} else {
++					$if vguard_hang_trace ? {
++						vguard_channel_wait(voidptr(ch), `S`, &ch.writesem_im)
++					}
+ 					ch.writesem_im.wait()
++					$if vguard_hang_trace ? {
++						vguard_channel_wait(voidptr(ch), `s`, &ch.writesem_im)
++					}
+ 				}
+ 				if C.atomic_load_u16(&ch.closed) != 0 {
+ 					if have_swapped
+@@ -632,7 +644,13 @@ fn (mut ch Channel) try_pop_impl(dest voidptr, no_block bool) ChanState {
+ 					return .closed
+ 				}
+ 			}
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(ch), `R`, &ch.readsem)
++			}
+ 			ch.readsem.wait()
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(ch), `r`, &ch.readsem)
++			}
+ 		}
+ 		if ch.cap > 0 {
+ 			// try to get buffer token
+@@ -732,7 +750,13 @@ fn (mut ch Channel) try_pop_impl(dest voidptr, no_block bool) ChanState {
+ 			if got_im_sem {
+ 				got_im_sem = false
+ 			} else {
++				$if vguard_hang_trace ? {
++					vguard_channel_wait(voidptr(ch), `R`, &ch.readsem_im)
++				}
+ 				ch.readsem_im.wait()
++				$if vguard_hang_trace ? {
++					vguard_channel_wait(voidptr(ch), `r`, &ch.readsem_im)
++				}
+ 			}
+ 			if have_swapped
+ 				|| C.atomic_compare_exchange_strong_ptr(voidptr(&ch.adr_written), voidptr(&dest2), int(0)) {
+@@ -955,16 +979,35 @@ fn channel_select_priv(mut channels []&Channel, dir []Direction, mut objrefs []v
+ 				C.atomic_store_u32(&select_state, select_state_scanning)
+ 				break outer
+ 			}
+-			if !sem.timed_wait(remaining) {
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(&sem), `M`, &sem)
++			}
++			woken := sem.timed_wait(remaining)
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(&sem), `m`, &sem)
++			}
++			if !woken {
+ 				timed_out = true
+ 			}
+ 		} else {
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(&sem), `M`, &sem)
++			}
+ 			sem.wait()
++			$if vguard_hang_trace ? {
++				vguard_channel_wait(voidptr(&sem), `m`, &sem)
++			}
+ 		}
+ 		mut expected := select_state_waiting
+ 		if !C.atomic_compare_exchange_strong_u32(&select_state, &expected, select_state_scanning) {
+ 			for C.atomic_load_u32(&select_state) == select_state_claimed {
++				$if vguard_hang_trace ? {
++					vguard_channel_wait(voidptr(&sem), `M`, &sem)
++				}
+ 				sem.wait()
++				$if vguard_hang_trace ? {
++					vguard_channel_wait(voidptr(&sem), `m`, &sem)
++				}
+ 			}
+ 			event_idx = int(C.atomic_load_u32(&select_state))
+ 			race_acquire_on(objrefs[event_idx])
+diff --git a/vlib/sync/sync_darwin.c.v b/vlib/sync/sync_darwin.c.v
+index 23d079d46f..638f8f792b 100644
+--- a/vlib/sync/sync_darwin.c.v
++++ b/vlib/sync/sync_darwin.c.v
+@@ -145,6 +145,13 @@ fn (mut m RwMutex) lazy_init() {
+ @[inline]
+ pub fn (mut m Mutex) lock() {
+ 	m.lazy_init()
++	$if vguard_hang_trace ? {
++		vguard_mutex_event(m, `w`)
++		rc := C.pthread_mutex_lock(&m.mutex)
++		vguard_mutex_event(m, if rc == 0 { `a` } else { `f` })
++		should_be_zero(rc)
++		return
++	}
+ 	should_be_zero(C.pthread_mutex_lock(&m.mutex))
+ }
+ 
+@@ -153,13 +160,23 @@ pub fn (mut m Mutex) lock() {
+ @[inline]
+ pub fn (mut m Mutex) try_lock() bool {
+ 	m.lazy_init()
+-	return C.pthread_mutex_trylock(&m.mutex) == 0
++	locked := C.pthread_mutex_trylock(&m.mutex) == 0
++	$if vguard_hang_trace ? {
++		if locked {
++			vguard_mutex_event(m, `t`)
++		}
++	}
++	return locked
+ }
+ 
+ // unlock unlocks the mutex instance. The mutex is released, and one of
+ // the other threads, that were blocked, because they called lock can continue.
+ @[inline]
+ pub fn (mut m Mutex) unlock() {
++	$if vguard_hang_trace ? {
++		// Publish the release before a new owner can acquire the mutex.
++		vguard_mutex_event(m, `r`)
++	}
+ 	should_be_zero(C.pthread_mutex_unlock(&m.mutex))
+ }
+ 
+@@ -184,6 +201,13 @@ pub fn (mut m Mutex) destroy() {
+ @[inline]
+ pub fn (mut m RwMutex) rlock() {
+ 	m.lazy_init()
++	$if vguard_hang_trace ? {
++		vguard_lock_event(voidptr(m), `s`)
++		rc := C.pthread_rwlock_rdlock(&m.mutex)
++		vguard_lock_event(voidptr(m), if rc == 0 { `b` } else { `f` })
++		should_be_zero(rc)
++		return
++	}
+ 	should_be_zero(C.pthread_rwlock_rdlock(&m.mutex))
+ }
+ 
+@@ -196,6 +220,13 @@ pub fn (mut m RwMutex) rlock() {
+ @[inline]
+ pub fn (mut m RwMutex) lock() {
+ 	m.lazy_init()
++	$if vguard_hang_trace ? {
++		vguard_lock_event(voidptr(m), `w`)
++		rc := C.pthread_rwlock_wrlock(&m.mutex)
++		vguard_lock_event(voidptr(m), if rc == 0 { `a` } else { `f` })
++		should_be_zero(rc)
++		return
++	}
+ 	should_be_zero(C.pthread_rwlock_wrlock(&m.mutex))
+ }
+ 
+@@ -204,7 +235,13 @@ pub fn (mut m RwMutex) lock() {
+ @[inline]
+ pub fn (mut m RwMutex) try_rlock() bool {
+ 	m.lazy_init()
+-	return C.pthread_rwlock_tryrdlock(&m.mutex) == 0
++	locked := C.pthread_rwlock_tryrdlock(&m.mutex) == 0
++	$if vguard_hang_trace ? {
++		if locked {
++			vguard_lock_event(voidptr(m), `u`)
++		}
++	}
++	return locked
+ }
+ 
+ // try_wlock try to lock the given RwMutex instance for writing and return immediately.
+@@ -212,7 +249,13 @@ pub fn (mut m RwMutex) try_rlock() bool {
+ @[inline]
+ pub fn (mut m RwMutex) try_wlock() bool {
+ 	m.lazy_init()
+-	return C.pthread_rwlock_trywrlock(&m.mutex) == 0
++	locked := C.pthread_rwlock_trywrlock(&m.mutex) == 0
++	$if vguard_hang_trace ? {
++		if locked {
++			vguard_lock_event(voidptr(m), `t`)
++		}
++	}
++	return locked
+ }
+ 
+ // destroy frees the resources associated with the rwmutex instance.
+@@ -228,6 +271,9 @@ pub fn (mut m RwMutex) destroy() {
+ // on !windows platforms.
+ @[inline]
+ pub fn (mut m RwMutex) runlock() {
++	$if vguard_hang_trace ? {
++		vguard_lock_event(voidptr(m), `q`)
++	}
+ 	C.pthread_rwlock_unlock(&m.mutex)
+ }
+ 
+@@ -238,6 +284,9 @@ pub fn (mut m RwMutex) runlock() {
+ // on !windows platforms.
+ @[inline]
+ pub fn (mut m RwMutex) unlock() {
++	$if vguard_hang_trace ? {
++		vguard_lock_event(voidptr(m), `r`)
++	}
+ 	C.pthread_rwlock_unlock(&m.mutex)
+ }
+ 
+diff --git a/vlib/sync/sync_default.c.v b/vlib/sync/sync_default.c.v
+index 41f623890c..02749bc240 100644
+--- a/vlib/sync/sync_default.c.v
++++ b/vlib/sync/sync_default.c.v
+@@ -154,6 +154,12 @@ fn (mut m RwMutex) lazy_init() {
+ // If the mutex was already locked, it will block, till it is unlocked.
+ @[inline]
+ pub fn (mut m Mutex) lock() {
++	$if vguard_hang_trace ? {
++		vguard_wait_lock(voidptr(m), `w`, voidptr(&m.mutex), sizeof(C.pthread_mutex_t))
++		rc := C.pthread_mutex_lock(&m.mutex)
++		vguard_mutex_event(m, if rc == 0 { `a` } else { `f` })
++		return
++	}
+ 	C.pthread_mutex_lock(&m.mutex)
+ }
+ 
+@@ -161,13 +167,23 @@ pub fn (mut m Mutex) lock() {
+ // If the mutex was already locked, it will return false.
+ @[inline]
+ pub fn (mut m Mutex) try_lock() bool {
+-	return C.pthread_mutex_trylock(&m.mutex) == 0
++	locked := C.pthread_mutex_trylock(&m.mutex) == 0
++	$if vguard_hang_trace ? {
++		if locked {
++			vguard_mutex_event(m, `t`)
++		}
++	}
++	return locked
+ }
+ 
+ // unlock unlocks the mutex instance. The mutex is released, and one of
+ // the other threads, that were blocked, because they called lock can continue.
+ @[inline]
+ pub fn (mut m Mutex) unlock() {
++	$if vguard_hang_trace ? {
++		// Publish the release before a new owner can acquire the mutex.
++		vguard_mutex_event(m, `r`)
++	}
+ 	C.pthread_mutex_unlock(&m.mutex)
+ }
+ 
+@@ -186,6 +202,13 @@ pub fn (mut m Mutex) destroy() {
+ @[inline]
+ pub fn (mut m RwMutex) rlock() {
+ 	m.lazy_init()
++	$if vguard_hang_trace ? {
++		vguard_wait_lock(voidptr(m), `s`, voidptr(&m.mutex), sizeof(C.pthread_rwlock_t))
++		rc := C.pthread_rwlock_rdlock(&m.mutex)
++		vguard_lock_event(voidptr(m), if rc == 0 { `b` } else { `f` })
++		should_be_zero(rc)
++		return
++	}
+ 	should_be_zero(C.pthread_rwlock_rdlock(&m.mutex))
+ }
+ 
+@@ -198,6 +221,13 @@ pub fn (mut m RwMutex) rlock() {
+ @[inline]
+ pub fn (mut m RwMutex) lock() {
+ 	m.lazy_init()
++	$if vguard_hang_trace ? {
++		vguard_wait_lock(voidptr(m), `w`, voidptr(&m.mutex), sizeof(C.pthread_rwlock_t))
++		rc := C.pthread_rwlock_wrlock(&m.mutex)
++		vguard_lock_event(voidptr(m), if rc == 0 { `a` } else { `f` })
++		should_be_zero(rc)
++		return
++	}
+ 	should_be_zero(C.pthread_rwlock_wrlock(&m.mutex))
+ }
+ 
+@@ -206,7 +236,13 @@ pub fn (mut m RwMutex) lock() {
+ @[inline]
+ pub fn (mut m RwMutex) try_rlock() bool {
+ 	m.lazy_init()
+-	return C.pthread_rwlock_tryrdlock(&m.mutex) == 0
++	locked := C.pthread_rwlock_tryrdlock(&m.mutex) == 0
++	$if vguard_hang_trace ? {
++		if locked {
++			vguard_lock_event(voidptr(m), `u`)
++		}
++	}
++	return locked
+ }
+ 
+ // try_wlock try to lock the given RwMutex instance for writing and return immediately.
+@@ -214,7 +250,13 @@ pub fn (mut m RwMutex) try_rlock() bool {
+ @[inline]
+ pub fn (mut m RwMutex) try_wlock() bool {
+ 	m.lazy_init()
+-	return C.pthread_rwlock_trywrlock(&m.mutex) == 0
++	locked := C.pthread_rwlock_trywrlock(&m.mutex) == 0
++	$if vguard_hang_trace ? {
++		if locked {
++			vguard_lock_event(voidptr(m), `t`)
++		}
++	}
++	return locked
+ }
+ 
+ // destroy frees the resources associated with the rwmutex instance.
+@@ -230,6 +272,9 @@ pub fn (mut m RwMutex) destroy() {
+ // on !windows platforms.
+ @[inline]
+ pub fn (mut m RwMutex) runlock() {
++	$if vguard_hang_trace ? {
++		vguard_lock_event(voidptr(m), `q`)
++	}
+ 	C.pthread_rwlock_unlock(&m.mutex)
+ }
+ 
+@@ -240,6 +285,9 @@ pub fn (mut m RwMutex) runlock() {
+ // on !windows platforms.
+ @[inline]
+ pub fn (mut m RwMutex) unlock() {
++	$if vguard_hang_trace ? {
++		vguard_lock_event(voidptr(m), `r`)
++	}
+ 	C.pthread_rwlock_unlock(&m.mutex)
+ }
+ 
+diff --git a/vlib/sync/vguard_d_vguard_hang_trace.c.v b/vlib/sync/vguard_d_vguard_hang_trace.c.v
+new file mode 100644
+index 0000000000..9c97d01e86
+--- /dev/null
++++ b/vlib/sync/vguard_d_vguard_hang_trace.c.v
+@@ -0,0 +1,32 @@
++module sync
++
++// A single stdio call keeps records from different threads intact.
++fn vguard_mutex_event(m &Mutex, action u8) {
++	vguard_lock_event(voidptr(m), action)
++}
++
++fn vguard_lock_event(address voidptr, action u8) {
++	C.fprintf(C.stderr, c'\036VGUARD-MUTEX\t%llu\t%llu\t%p\t%c\n', v_getpid(), v_gettid(),
++		address, int(action))
++}
++
++// Report the pthread object's extent without exposing its libc-specific layout.
++fn vguard_wait_lock(address voidptr, action u8, pthread_object voidptr, size usize) {
++	$if linux {
++		C.fprintf(C.stderr, c'\036VGUARD-MUTEX\t%llu\t%llu\t%p\t%c\t%p\t%zu\n', v_getpid(),
++			v_gettid(), address, int(action), pthread_object, size)
++	} $else {
++		vguard_lock_event(address, action)
++	}
++}
++
++// The Linux analyzer can correlate the wait with the actual sem_t address.
++fn vguard_channel_wait(address voidptr, action u8, semaphore &Semaphore) {
++	$if linux {
++		C.fprintf(C.stderr, c'\036VGUARD-CHANNEL\t%llu\t%llu\t%p\t%c\t%p\n', v_getpid(),
++			v_gettid(), address, int(action), voidptr(&semaphore.sem))
++	} $else {
++		C.fprintf(C.stderr, c'\036VGUARD-CHANNEL\t%llu\t%llu\t%p\t%c\n', v_getpid(),
++			v_gettid(), address, int(action))
++	}
++}
 diff --git a/vlib/v/driver/driver.v b/vlib/v/driver/driver.v
-index 0304994c77..9c97d5ac7d 100644
+index 0304994c77..9426ff1d50 100644
 --- a/vlib/v/driver/driver.v
 +++ b/vlib/v/driver/driver.v
 @@ -4593,7 +4593,7 @@ fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, us
@@ -7,19 +383,29 @@ index 0304994c77..9c97d5ac7d 100644
  
  fn cli_usage() string {
 -	return 'usage: v3 [run|crun|test] <file.v|directory> [options]\n' + '  -o <output>                  output binary or C file\n' + '  -b <c|fastc|native|arm64|amd64|x64|wasm|eval> backend\n' + '  -native                      native backend for the target architecture\n' + '  -os <name> -arch <name>      target platform\n' + '  -cc <compiler>               C compiler executable\n' + '  -cflags <flags>              extra C compiler options\n' + '  -ldflags <flags>             extra options appended to the link command\n' + '  -syscalls                    libc-linked build with os on raw syscalls (C backend)\n' + '  -thread-stack-size <bytes>   spawned-thread stack size\n' + '  -hot-fn <name>              extract raw machine code for one function (hot reload, arm64)\n' + '  -prod -c99 -shared -strict   C build modes\n' + '  -v                           verbose stage profiling\n' + '  -show-timings                compiler stage timings without verbose traces\n' + '  -show-instructions           -show-timings plus retired CPU instructions per stage (macOS)\n' + '  -silent                      suppress benchmark output\n' + '  -showcc                      print C compiler commands\n' + '  -trace-calls                 trace function entries to stderr\n' + '  -trace-fns <patterns>        restrict tracing to functions or modules\n' + '  -race                        detect data races at runtime (ThreadSanitizer)\n' + '  -profile [file]              write V1-compatible function profile data\n' + '  -profile-fns <names>         profile only named functions and their callees\n' + '  -profile-no-inline           omit @[inline] functions from the profile\n' + '  -no-memory-limit             disable the 10176 MiB user-build memory safety limit\n' + '  -memory-limit <size>         set a custom user-build memory safety limit\n                               to specify unit append K|M|G (or k|m|g) (default: M)\n' + '  -d <name>                    compile-time define'
-+	return 'usage: v3 [run|crun|test] <file.v|directory> [options]\n' + '  -o <output>                  output binary or C file\n' + '  -b <c|fastc|native|arm64|amd64|x64|wasm|eval> backend\n' + '  -native                      native backend for the target architecture\n' + '  -os <name> -arch <name>      target platform\n' + '  -cc <compiler>               C compiler executable\n' + '  -cflags <flags>              extra C compiler options\n' + '  -ldflags <flags>             extra options appended to the link command\n' + '  -syscalls                    libc-linked build with os on raw syscalls (C backend)\n' + '  -thread-stack-size <bytes>   spawned-thread stack size\n' + '  -hot-fn <name>              extract raw machine code for one function (hot reload, arm64)\n' + '  -vguard-map <file>           record a VGuard binary source map\n  -vguard-trace                instrument scalar values for VGuard\n  -vguard-trace-calls          add function entry events to VGuard scalar tracing\n  -vguard-ssa-analysis         save optimization and dataflow reports with -vguard-map\n  -prod -c99 -shared -strict   C build modes\n' + '  -v                           verbose stage profiling\n' + '  -show-timings                compiler stage timings without verbose traces\n' + '  -show-instructions           -show-timings plus retired CPU instructions per stage (macOS)\n' + '  -silent                      suppress benchmark output\n' + '  -showcc                      print C compiler commands\n' + '  -trace-calls                 trace function entries to stderr\n' + '  -trace-fns <patterns>        restrict tracing to functions or modules\n' + '  -race                        detect data races at runtime (ThreadSanitizer)\n' + '  -profile [file]              write V1-compatible function profile data\n' + '  -profile-fns <names>         profile only named functions and their callees\n' + '  -profile-no-inline           omit @[inline] functions from the profile\n' + '  -no-memory-limit             disable the 10176 MiB user-build memory safety limit\n' + '  -memory-limit <size>         set a custom user-build memory safety limit\n                               to specify unit append K|M|G (or k|m|g) (default: M)\n' + '  -d <name>                    compile-time define'
++	return 'usage: v3 [run|crun|test] <file.v|directory> [options]\n' + '  -o <output>                  output binary or C file\n' + '  -b <c|fastc|native|arm64|amd64|x64|wasm|eval> backend\n' + '  -native                      native backend for the target architecture\n' + '  -os <name> -arch <name>      target platform\n' + '  -cc <compiler>               C compiler executable\n' + '  -cflags <flags>              extra C compiler options\n' + '  -ldflags <flags>             extra options appended to the link command\n' + '  -syscalls                    libc-linked build with os on raw syscalls (C backend)\n' + '  -thread-stack-size <bytes>   spawned-thread stack size\n' + '  -hot-fn <name>              extract raw machine code for one function (hot reload, arm64)\n' + '  -vguard-map <file>           record a VGuard binary source map\n  -vguard-trace                instrument scalar values for VGuard\n  -vguard-trace-calls          add function entry events to VGuard scalar tracing\n  -vguard-trace-hangs          instrument mutexes and loop progress\n  -vguard-ssa-analysis         save optimization and dataflow reports with -vguard-map\n  -prod -c99 -shared -strict   C build modes\n' + '  -v                           verbose stage profiling\n' + '  -show-timings                compiler stage timings without verbose traces\n' + '  -show-instructions           -show-timings plus retired CPU instructions per stage (macOS)\n' + '  -silent                      suppress benchmark output\n' + '  -showcc                      print C compiler commands\n' + '  -trace-calls                 trace function entries to stderr\n' + '  -trace-fns <patterns>        restrict tracing to functions or modules\n' + '  -race                        detect data races at runtime (ThreadSanitizer)\n' + '  -profile [file]              write V1-compatible function profile data\n' + '  -profile-fns <names>         profile only named functions and their callees\n' + '  -profile-no-inline           omit @[inline] functions from the profile\n' + '  -no-memory-limit             disable the 10176 MiB user-build memory safety limit\n' + '  -memory-limit <size>         set a custom user-build memory safety limit\n                               to specify unit append K|M|G (or k|m|g) (default: M)\n' + '  -d <name>                    compile-time define'
  }
  
  fn normalize_backend_name(name string) string {
-@@ -9164,7 +9164,7 @@ fn parse_memory_limit(value string) !i64 {
+@@ -9164,12 +9164,12 @@ fn parse_memory_limit(value string) !i64 {
  }
  
  fn v3_driver_option_requires_value(option string) bool {
 -	return option in ['-e', '-o', '-output', '-b', '-backend', '-os', '-arch', '-compile-backend',
-+	return option in ['-vguard-map', '-e', '-o', '-output', '-b', '-backend', '-os', '-arch', '-compile-backend',
- 		'--compile-backend', '-d', '-define', '-gc', '-cc', '-thread-stack-size', '-hot-fn', '-path',
- 		'-cov', '-coverage', '-file-list', '-message-limit', '-printfn', '-generate-c-project',
- 		'-test-runner', '-run-only', '-profile-fns', '-trace-fns', '-subsystem', '-exclude',
+-		'--compile-backend', '-d', '-define', '-gc', '-cc', '-thread-stack-size', '-hot-fn', '-path',
+-		'-cov', '-coverage', '-file-list', '-message-limit', '-printfn', '-generate-c-project',
+-		'-test-runner', '-run-only', '-profile-fns', '-trace-fns', '-subsystem', '-exclude',
+-		'-dump-files', '-icon', '--icon', '-seticon', '--seticon', '-line-info', '-raw-vsh-tmp-prefix',
+-		'-memory-limit', '--memory-limit']
++	return option in ['-vguard-map', '-e', '-o', '-output', '-b', '-backend', '-os', '-arch',
++		'-compile-backend', '--compile-backend', '-d', '-define', '-gc', '-cc', '-thread-stack-size',
++		'-hot-fn', '-path', '-cov', '-coverage', '-file-list', '-message-limit', '-printfn',
++		'-generate-c-project', '-test-runner', '-run-only', '-profile-fns', '-trace-fns', '-subsystem',
++		'-exclude', '-dump-files', '-icon', '--icon', '-seticon', '--seticon', '-line-info',
++		'-raw-vsh-tmp-prefix', '-memory-limit', '--memory-limit']
+ }
+ 
+ // format_v3_dumped_c_flags keeps value-taking flags on one line with their value, as V 0.5.2
 @@ -9586,6 +9586,12 @@ $if !skip_fastc ? {
  		output += result.output
  		command := cmdexec.display(compiler, args)
@@ -33,23 +419,42 @@ index 0304994c77..9c97d5ac7d 100644
  		os.mv(staged, bin_file) or { return V3FastCCompileResult{ command: command, output: err.msg() } }
  		return V3FastCCompileResult{ success: true, command: command, output: output }
  	}
-@@ -10142,6 +10148,10 @@ pub fn run(args []string) {
+@@ -10142,6 +10148,14 @@ pub fn run(args []string) {
  	mut skip_running := false
  	mut is_debug := false
  	mut is_c_debug := false
 +	mut vguard_ssa_analysis := false
++	mut vguard_native_memory := false
++	mut vguard_wasm_heap := false
 +	mut vguard_map_path := ''
 +	mut vguard_trace := false
 +	mut vguard_trace_calls := false
++	mut vguard_trace_hangs := false
++	mut vguard_runtime_ssa := false
  	mut c99 := false
  	mut c99_explicit := false
  	mut thread_stack_size := 0
-@@ -10549,6 +10559,20 @@ pub fn run(args []string) {
+@@ -10549,6 +10563,35 @@ pub fn run(args []string) {
  			}
  			user_ld_flags << parsed_ld_flags
  			i += 2
++		} else if args[i] == '-vguard-native-memory' {
++			vguard_native_memory = true
++			i++
++		} else if args[i] == '-vguard-wasm-heap' {
++			vguard_wasm_heap = true
++			i++
 +		} else if args[i] == '-vguard-ssa-analysis' {
 +			vguard_ssa_analysis = true
++			i++
++		} else if args[i] == '-vguard-runtime-ssa' {
++			vguard_runtime_ssa = true
++			no_cache = true
++			i++
++		} else if args[i] == '-vguard-trace-hangs' {
++			vguard_trace_hangs = true
++			no_cache = true
++			record_user_define(mut user_defines, mut compile_values, 'vguard_hang_trace')
 +			i++
 +		} else if args[i] == '-vguard-trace-calls' {
 +			vguard_trace_calls = true
@@ -65,10 +470,34 @@ index 0304994c77..9c97d5ac7d 100644
  		} else if args[i] in ['-g', '-cg', '-cdebug'] {
  			is_debug = true
  			if args[i] in ['-cg', '-cdebug'] {
-@@ -10999,6 +11023,33 @@ pub fn run(args []string) {
+@@ -10843,6 +10886,9 @@ pub fn run(args []string) {
+ 	// wins, exactly like V1 orders `env_ldflags` before the `-ldflags` value.
+ 	mut link_ld_flags := environment_ld_flags.clone()
+ 	link_ld_flags << user_ld_flags
++	if vguard_native_memory {
++		link_ld_flags << '-fsanitize=address'
++	}
+ 	if is_trace_calls {
+ 		if backend != 'c' {
+ 			eprintln('option `-trace-calls` is only supported by the C backend')
+@@ -10999,6 +11045,47 @@ pub fn run(args []string) {
  	if os.getenv(v3_embedded_env) != '1' {
  		maybe_delegate_v3_to_vvmrc(input_file, verbose)
  	}
++	if vguard_native_memory && (vguard_map_path == '' || backend !in ['amd64', 'arm64']
++		|| is_o || is_shared || hot_fn != '' || c_compiler != 'clang' || gc_mode != 'none') {
++		eprintln('-vguard-native-memory requires a native standalone executable, -vguard-map, -gc none, and -cc clang')
++		exit(1)
++	}
++	if vguard_runtime_ssa && (!vguard_ssa_analysis || backend !in ['amd64', 'arm64']
++		|| target_os !in ['linux', 'macos'] || is_o || is_shared || hot_fn != '') {
++		eprintln('-vguard-runtime-ssa requires -vguard-ssa-analysis and a standalone AMD64 or ARM64 executable')
++		exit(1)
++	}
++	if vguard_wasm_heap && (backend != 'wasm' || vguard_map_path == '' || is_o || is_shared) {
++		eprintln('-vguard-wasm-heap requires a standalone Wasm build and -vguard-map')
++		exit(1)
++	}
 +	if vguard_ssa_analysis && (vguard_map_path == '' || backend !in ['amd64', 'arm64', 'wasm']) {
 +		eprintln('-vguard-ssa-analysis requires -vguard-map and an SSA backend (amd64, arm64 or wasm)')
 +		exit(1)
@@ -99,7 +528,7 @@ index 0304994c77..9c97d5ac7d 100644
  	// JS and FastC dispatch before the common runtime-injection validation below.
  	if 'vlibc' in user_defines && backend != 'c' {
  		eprintln('`-d vlibc` requires the C backend and a supported Unix amd64/arm64 target')
-@@ -11647,6 +11698,30 @@ pub fn run(args []string) {
+@@ -11647,6 +11734,39 @@ pub fn run(args []string) {
  	if verbose {
  		eprintln('v.pref.lookup_path: ${os.join_path(prefs.vroot, 'vlib')}')
  	}
@@ -107,12 +536,21 @@ index 0304994c77..9c97d5ac7d 100644
 +		eprintln('-vguard-trace-calls requires -vguard-trace')
 +		exit(1)
 +	}
-+	trace_input, trace_root := if vguard_trace {
++	if vguard_trace_hangs && (backend != 'c' || target.os !in ['linux', 'macos']
++		|| is_o || is_shared || c_only) {
++		eprintln('-vguard-trace-hangs requires a standalone C backend executable on Linux or macOS')
++		exit(1)
++	}
++	trace_input, trace_root := if vguard_trace || vguard_trace_hangs {
 +		if vguard_map_path == '' {
-+			eprintln('-vguard-trace requires -vguard-map')
++			eprintln('VGuard runtime tracing requires -vguard-map')
 +			exit(1)
 +		}
-+		stage_vguard_trace(input_file, prefs, vguard_trace_calls) or {
++		stage_vguard_trace(input_file, prefs, VGuardTraceOptions{
++			scalars: vguard_trace
++			calls:   vguard_trace_calls
++			hangs:   vguard_trace_hangs
++		}) or {
 +			eprintln(err)
 +			exit(1)
 +			return
@@ -130,7 +568,7 @@ index 0304994c77..9c97d5ac7d 100644
  	prefs.supports_inline_asm = is_checker_fixture || (backend == 'fastc' && c_only
  		&& target.arch in ['amd64', 'arm64'])
  	if backend == 'fastc' {
-@@ -11699,8 +11774,8 @@ pub fn run(args []string) {
+@@ -11699,8 +11819,8 @@ pub fn run(args []string) {
  			if is_shared || is_livemain || is_liveshared {
  				unsupported_modes << 'shared/live builds'
  			}
@@ -141,7 +579,7 @@ index 0304994c77..9c97d5ac7d 100644
  			}
  			if is_prof || coverage_dir.len > 0 {
  				unsupported_modes << 'profiling/coverage'
-@@ -11854,6 +11929,27 @@ pub fn run(args []string) {
+@@ -11854,6 +11974,27 @@ pub fn run(args []string) {
  				clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  				return
  			}
@@ -160,7 +598,7 @@ index 0304994c77..9c97d5ac7d 100644
 +					eprintln(compiled.output)
 +					exit(1)
 +				}
-+				write_vguard_map(vguard_map_path, bin_file, prefs, '', [], '') or {
++				write_vguard_map(vguard_map_path, bin_file, prefs, '', [], '', '', false) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -169,12 +607,12 @@ index 0304994c77..9c97d5ac7d 100644
  			fastc_bin_file := bin_file
  			fastc_sdk_root := if prefs.normalized_target_os() == 'macos' {
  				macos_sdk_root_cache.get()
-@@ -11921,6 +12017,12 @@ pub fn run(args []string) {
+@@ -11921,6 +12062,12 @@ pub fn run(args []string) {
  				eprintln('fastc-bench-total: files=${fastc_generation.source_paths.len} lines=${total_lines} total=${f64(total_us) / 1000.0:.2f}ms throughput=${mloc_per_s:.3f} MLOC/s (includes TinyCC)')
  			}
  			b.step('tcc')
 +			if vguard_map_path != '' {
-+				write_vguard_map(vguard_map_path, fastc_bin_file, prefs, '', [], '') or {
++				write_vguard_map(vguard_map_path, fastc_bin_file, prefs, '', [], '', '', false) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -182,17 +620,22 @@ index 0304994c77..9c97d5ac7d 100644
  			b.metric('generated C size', fastc_generation.c_size(), 'bytes')
  			if retain_backend_c {
  				fastc.write_c_pieces(output_file, fastc_generation.c_pieces) or {
-@@ -14825,6 +14927,8 @@ pub fn run(args []string) {
+@@ -14825,19 +14972,33 @@ pub fn run(args []string) {
  				exit(1)
  			}
  			mut m := ssa.build_with_options(a, config.used_fns, pre_tc, ssa.BuildOptions{
+-				target:         ssa.TargetData{ ptr_size: 4 }
+-				track_uses:     is_prod
+-				exact_used_fns: true
+-				source_modules: config.source_modules
+-				source_imports: config.source_imports
 +				vguard_enabled:   vguard_map_path != ''
 +				vguard_track_ast: vguard_ssa_analysis
- 				target:         ssa.TargetData{ ptr_size: 4 }
- 				track_uses:     is_prod
- 				exact_used_fns: true
-@@ -14832,8 +14936,17 @@ pub fn run(args []string) {
- 				source_imports: config.source_imports
++				target:           ssa.TargetData{ ptr_size: 4 }
++				track_uses:       is_prod
++				exact_used_fns:   true
++				source_modules:   config.source_modules
++				source_imports:   config.source_imports
  			})
  			b.step('ssa build')
 +			if vguard_ssa_analysis {
@@ -210,12 +653,19 @@ index 0304994c77..9c97d5ac7d 100644
  				b.step('optimize')
  			}
  			m.release_codegen_analysis_metadata()
-@@ -14860,6 +14973,12 @@ pub fn run(args []string) {
+ 			mut g := wasmgen.SSAGen.new(m)
++			if vguard_wasm_heap {
++				g.enable_vguard_heap()
++			}
+ 			mut main_fn := config.main_fn
+ 			mut exports := config.exports.clone()
+ 			if main_fn.len == 0 {
+@@ -14860,6 +15021,12 @@ pub fn run(args []string) {
  				eprintln('error writing ${output_file}')
  				exit(1)
  			}
 +			if vguard_map_path != '' {
-+				write_vguard_ssa_map(vguard_map_path, output_file, prefs, '', a, m, g.vguard_emission_ranges()) or {
++				write_vguard_ssa_map(vguard_map_path, output_file, prefs, '', a, m, g.vguard_emission_ranges(), [], false) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -223,16 +673,33 @@ index 0304994c77..9c97d5ac7d 100644
  			for warning in g.warnings_list() {
  				eprintln('wasm: ${warning}')
  			}
-@@ -14880,6 +14999,8 @@ pub fn run(args []string) {
+@@ -14880,15 +15047,18 @@ pub fn run(args []string) {
  		}
  		$if !skip_amd64 ?&& !skip_x64 ? {
  			mut m := ssa.build_with_options(a, used_fns, pre_tc, ssa.BuildOptions{
-+				vguard_enabled:   vguard_map_path != ''
-+				vguard_track_ast: vguard_ssa_analysis
++				vguard_enabled:        vguard_map_path != ''
++				vguard_track_ast:      vguard_ssa_analysis
++				vguard_native_atomics: true
  				// The optimizer rebuilds use lists once before consuming them.
  				// Incremental tracking is quadratic for large generic functions.
- 				track_uses:           false
-@@ -14906,8 +15027,23 @@ pub fn run(args []string) {
+-				track_uses:           false
+-				thread_stack_size:    prefs.thread_stack_size
+-				test_files:           test_files
+-				test_run_only:        run_only
+-				exact_used_fns:       true
+-				use_native_c_sources: true
+-				target:               ssa.TargetData{
++				track_uses:            false
++				thread_stack_size:     prefs.thread_stack_size
++				test_files:            test_files
++				test_run_only:         run_only
++				exact_used_fns:        true
++				use_native_c_sources:  true
++				target:                ssa.TargetData{
+ 					os:   prefs.target.os
+ 					arch: 'amd64'
+ 				}
+@@ -14906,17 +15076,37 @@ pub fn run(args []string) {
  			b.metric('SSA blocks before optimize', m.blocks.len, 'blocks')
  
  			run_ssa_optimizer := is_prod && m.values.len <= amd64_prod_ssa_optimizer_max_values
@@ -257,12 +724,26 @@ index 0304994c77..9c97d5ac7d 100644
  				b.step('optimize')
  			} else if is_prod && verbose {
  				eprintln('amd64: skipping global SSA optimizer for ${m.values.len} values to bound compiler memory')
-@@ -14935,6 +15071,12 @@ pub fn run(args []string) {
+ 			}
++			if vguard_runtime_ssa {
++				m.vguard_runtime_files = vguard_runtime_source_files(a, input_file)
++			}
+ 			m.release_codegen_analysis_metadata()
+ 
+ 			mut g := amd64.Gen.new_with_options(m, amd64.GenOptions{
+ 				optimize_runtime: is_prod
+ 			})
++			g.vguard_record_homes = vguard_ssa_analysis || vguard_native_memory
++			g.vguard_memory = vguard_native_memory
+ 			g.validate_c_extern_calls() or {
+ 				eprintln(err.msg())
+ 				exit(1)
+@@ -14935,6 +15125,12 @@ pub fn run(args []string) {
  					eprintln('amd64 ELF object output failed: ${err}')
  					exit(1)
  				}
 +				if vguard_map_path != '' {
-+					write_vguard_ssa_map(vguard_map_path, bin_file, prefs, '', a, m, g.vguard_emission_ranges()) or {
++					write_vguard_ssa_map(vguard_map_path, bin_file, prefs, '', a, m, g.vguard_emission_ranges(), g.vguard_value_homes(), vguard_native_memory) or {
 +						eprintln(err)
 +						exit(1)
 +					}
@@ -270,12 +751,22 @@ index 0304994c77..9c97d5ac7d 100644
  				b.print_report()
  				return
  			}
-@@ -14988,6 +15130,12 @@ pub fn run(args []string) {
+@@ -14970,6 +15166,9 @@ pub fn run(args []string) {
+ 				}
+ 			}
+ 			linker_args << native_link_flags
++			if vguard_native_memory {
++				linker_args << '-fsanitize=address'
++			}
+ 			if !is_native_freestanding {
+ 				linker_args << ['-lm', '-ldl', '-lpthread']
+ 			}
+@@ -14988,6 +15187,12 @@ pub fn run(args []string) {
  				eprintln('amd64 link failed with `${linker}`')
  				exit(1)
  			}
 +			if vguard_map_path != '' {
-+				write_vguard_ssa_map(vguard_map_path, bin_file, prefs, '', a, m, g.vguard_emission_ranges()) or {
++				write_vguard_ssa_map(vguard_map_path, bin_file, prefs, '', a, m, g.vguard_emission_ranges(), g.vguard_value_homes(), vguard_native_memory) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -283,7 +774,18 @@ index 0304994c77..9c97d5ac7d 100644
  			b.step('link')
  			clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  			if should_run {
-@@ -15115,6 +15263,8 @@ pub fn run(args []string) {
+@@ -15014,7 +15219,9 @@ pub fn run(args []string) {
+ 		} else {
+ 			[]string{}
+ 		}
+-		arm64_link_mode, arm64_link_reason := if target.os == 'macos' && !is_o {
++		arm64_link_mode, arm64_link_reason := if target.os == 'macos' && (vguard_native_memory || vguard_runtime_ssa) {
++			Arm64LinkMode.external, 'AddressSanitizer'
++		} else if target.os == 'macos' && !is_o {
+ 			arm64_link_mode(a, arm64_directive_flags, prefs.user_defines)
+ 		} else {
+ 			Arm64LinkMode.internal, ''
+@@ -15115,6 +15322,8 @@ pub fn run(args []string) {
  			}
  			// SSA + ARM64 native backend
  			mut m := ssa.build_with_options(a, used_fns, pre_tc, ssa.BuildOptions{
@@ -292,7 +794,7 @@ index 0304994c77..9c97d5ac7d 100644
  				track_uses:           false // optimize() rebuilds them
  				thread_stack_size:    prefs.thread_stack_size
  				test_files:           test_files
-@@ -15142,8 +15292,17 @@ pub fn run(args []string) {
+@@ -15142,16 +15351,30 @@ pub fn run(args []string) {
  			b.metric('SSA instructions before optimize', m.instrs.len, 'instructions')
  			b.metric('SSA blocks before optimize', m.blocks.len, 'blocks')
  
@@ -311,12 +813,25 @@ index 0304994c77..9c97d5ac7d 100644
  				b.step('optimize')
  				b.metric('SSA values after optimize', m.values.len, 'values')
  				b.metric('SSA instructions after optimize', m.instrs.len, 'instructions')
-@@ -15177,6 +15336,12 @@ pub fn run(args []string) {
+ 				b.metric('SSA blocks after optimize', m.blocks.len, 'blocks')
+ 			}
++			if vguard_runtime_ssa {
++				m.vguard_runtime_files = vguard_runtime_source_files(a, input_file)
++			}
+ 			m.release_codegen_analysis_metadata()
+ 
+ 			mut g := arm64.Gen.new(m)
++			g.vguard_record_homes = vguard_ssa_analysis || vguard_native_memory
++			g.vguard_memory = vguard_native_memory
+ 			g.prune_unused = 'freestanding' in prefs.user_defines
+ 				|| (target.os == 'linux' && !is_o && prefs.hot_fn.len == 0)
+ 			g.freestanding = 'freestanding' in prefs.user_defines
+@@ -15177,6 +15400,12 @@ pub fn run(args []string) {
  					exit(1)
  				}
  				os.write_file_array(bin_file, code) or { panic(err) }
 +				if vguard_map_path != '' {
-+					write_vguard_ssa_map(vguard_map_path, bin_file, prefs, prefs.hot_fn, a, m, g.vguard_emission_ranges()) or {
++					write_vguard_ssa_map(vguard_map_path, bin_file, prefs, prefs.hot_fn, a, m, g.vguard_emission_ranges(), g.vguard_value_homes(), vguard_native_memory) or {
 +						eprintln(err)
 +						exit(1)
 +					}
@@ -324,12 +839,12 @@ index 0304994c77..9c97d5ac7d 100644
  				println('hot-fn: wrote ${code.len} bytes for "${prefs.hot_fn}" to ${bin_file}')
  				return
  			}
-@@ -15260,6 +15425,12 @@ pub fn run(args []string) {
+@@ -15260,6 +15489,12 @@ pub fn run(args []string) {
  			} else {
  				g.write_and_link(bin_file)
  			}
 +			if vguard_map_path != '' {
-+				write_vguard_ssa_map(vguard_map_path, bin_file, prefs, '', a, m, g.vguard_emission_ranges()) or {
++				write_vguard_ssa_map(vguard_map_path, bin_file, prefs, '', a, m, g.vguard_emission_ranges(), g.vguard_value_homes(), vguard_native_memory) or {
 +					eprintln(err)
 +					exit(1)
 +				}
@@ -337,7 +852,7 @@ index 0304994c77..9c97d5ac7d 100644
  			b.step('link')
  			clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  			if should_run {
-@@ -15335,8 +15506,13 @@ pub fn run(args []string) {
+@@ -15335,8 +15570,13 @@ pub fn run(args []string) {
  		mut cc_dir_moved := false
  		mut cc_src := output_file
  		mut cc_out := ''
@@ -353,7 +868,7 @@ index 0304994c77..9c97d5ac7d 100644
  		if !c_only {
  			cc_dir = os.join_path_single(v3_output_dir(bin_file), '.${os.base(bin_file)}.v3cc.${tempname.unique_token()}')
  			// tcc.exe is not long-path aware, so a build dir near MAX_PATH cannot hold its files.
-@@ -15452,7 +15628,7 @@ pub fn run(args []string) {
+@@ -15452,7 +15692,7 @@ pub fn run(args []string) {
  			g.set_prod(prefs.is_prod)
  			g.set_debug(prefs.is_debug)
  			g.set_race(race)
@@ -362,7 +877,7 @@ index 0304994c77..9c97d5ac7d 100644
  			g.set_check_overflow(check_overflow)
  			g.set_check_casts(check_casts)
  			g.set_check_scope_vroot(prefs.vroot)
-@@ -15566,7 +15742,7 @@ pub fn run(args []string) {
+@@ -15566,7 +15806,7 @@ pub fn run(args []string) {
  			g.set_prod(prefs.is_prod)
  			g.set_debug(prefs.is_debug)
  			g.set_race(race)
@@ -371,12 +886,12 @@ index 0304994c77..9c97d5ac7d 100644
  			g.set_check_overflow(check_overflow)
  			g.set_check_casts(check_casts)
  			g.set_check_scope_vroot(prefs.vroot)
-@@ -17119,6 +17295,12 @@ Please install the corresponding development package/libraries and make sure the
+@@ -17119,6 +17359,12 @@ Please install the corresponding development package/libraries and make sure the
  		clear_macos_v3_compiler_error_fallback(macos_v3_fallback_file)
  		// The C compiler is done. What was set up for `cl` must not reach the program that runs next.
  		msvc_restore_environment(msvc_saved_environment)
 +		if vguard_map_path != '' {
-+			write_vguard_map(vguard_map_path, bin_file, prefs, '', [], '') or {
++			write_vguard_map(vguard_map_path, bin_file, prefs, '', [], '', '', false) or {
 +				eprintln(err)
 +				exit(1)
 +			}
@@ -386,10 +901,10 @@ index 0304994c77..9c97d5ac7d 100644
  				write_v3_crun_cache_marker(bin_file, crun_build_identity) or {}
 diff --git a/vlib/v/driver/vguard_map.v b/vlib/v/driver/vguard_map.v
 new file mode 100644
-index 0000000000..546fa27c14
+index 0000000000..7f83f7cd22
 --- /dev/null
 +++ b/vlib/v/driver/vguard_map.v
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,96 @@
 +module driver
 +
 +import crypto.sha256
@@ -398,24 +913,39 @@ index 0000000000..546fa27c14
 +import os
 +import v.pref
 +
-+struct VGuardSourceRange {
-+	function string
-+	symbol   string
-+	body     int
-+	start    int
-+	end      int
++struct VGuardReturnHomeRecord {
 +	value    int
-+	op       string
-+	file     string
-+	line     int
-+	column   int
++	bytes    int
++	register string
++}
++
++struct VGuardSourceRange {
++	function        string
++	symbol          string
++	body            int
++	start           int
++	end             int
++	value           int
++	op              string
++	file            string
++	line            int
++	column          int
++	recovery_prefix int
++	return_home     VGuardReturnHomeRecord
++	control_homes   VGuardControlHomesRecord
++}
++
++struct VGuardControlHomesRecord {
++	prefix_through    int
++	alternate_start   int
++	alternate_through int
 +}
 +
 +fn vguard_json_string(s string) string {
 +	return '"' + errors.json_escape(s) + '"'
 +}
 +
-+fn write_vguard_map(path string, artifact string, prefs &pref.Preferences, hot_fn string, ranges []VGuardSourceRange, ssa_sha256 string) ! {
++fn write_vguard_map(path string, artifact string, prefs &pref.Preferences, hot_fn string, ranges []VGuardSourceRange, ssa_sha256 string, native_homes string, native_memory bool) ! {
 +	if os.real_path(path) == os.real_path(artifact) {
 +		return error('VGuard map path aliases the binary')
 +	}
@@ -430,6 +960,9 @@ index 0000000000..546fa27c14
 +	if ssa_sha256 != '' {
 +		output.write_string(',"ssa_sha256":"${ssa_sha256}"')
 +	}
++	if native_memory {
++		output.write_string(',"native_memory":true')
++	}
 +	output.write_string(',"ranges":[')
 +	for i, r in ranges {
 +		if i > 0 {
@@ -443,28 +976,49 @@ index 0000000000..546fa27c14
 +		output.write_string('{"function":${vguard_json_string(r.function)},"symbol":${vguard_json_string(symbol)}')
 +		output.write_string(',"body":${r.body},"start":${r.start},"end":${r.end},"value":${r.value}')
 +		output.write_string(',"op":${vguard_json_string(r.op)},"file":${vguard_json_string(r.file)}')
-+		output.write_string(',"line":${r.line},"column":${r.column}}')
++		output.write_string(',"line":${r.line},"column":${r.column}')
++		if r.recovery_prefix > 0 {
++			output.write_string(',"recovery_prefix":${r.recovery_prefix}')
++		}
++		if r.return_home.bytes > 0 {
++			output.write_string(',"return_home":{"value":${r.return_home.value},"bytes":${r.return_home.bytes},"register":${vguard_json_string(r.return_home.register)}}')
++		}
++		control := r.control_homes
++		if control.prefix_through > 0 {
++			output.write_string(',"control_homes":{"prefix_through":${control.prefix_through}')
++			if control.alternate_start > 0 {
++				output.write_string(',"alternate_start":${control.alternate_start},"alternate_through":${control.alternate_through}')
++			}
++			output.write_u8(`}`)
++		}
++		output.write_u8(`}`)
 +	}
-+	output.write_string(']}\n')
++	output.write_u8(`]`)
++	if native_homes != '' {
++		output.write_string(',"native_homes":')
++		output.write_string(native_homes)
++	}
++	output.writeln('}')
 +	os.write_file(path, output.str())!
 +}
 diff --git a/vlib/v/driver/vguard_map_notd_skip_ssa.v b/vlib/v/driver/vguard_map_notd_skip_ssa.v
 new file mode 100644
-index 0000000000..acedcef345
+index 0000000000..1c114d014f
 --- /dev/null
 +++ b/vlib/v/driver/vguard_map_notd_skip_ssa.v
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,149 @@
 +module driver
 +
 +import crypto.sha256
 +import os
++import strings
 +import v.flat
 +import v.pref
 +import v.ssa
 +import v.ssa.optimize
 +import v.token
 +
-+fn write_vguard_ssa_map(path string, artifact string, prefs &pref.Preferences, hot_fn string, a &flat.FlatAst, m &ssa.Module, ranges []ssa.EmissionRange) ! {
++fn write_vguard_ssa_map(path string, artifact string, prefs &pref.Preferences, hot_fn string, a &flat.FlatAst, m &ssa.Module, ranges []ssa.EmissionRange, homes []ssa.VGuardValueHome, native_memory bool) ! {
 +	ssa_path := path + '.ssa'
 +	map_path := os.real_path(path)
 +	artifact_path := os.real_path(artifact)
@@ -473,7 +1027,70 @@ index 0000000000..acedcef345
 +	}
 +	ssa_sha256 := write_vguard_ssa(ssa_path, m, hot_fn)!
 +	write_vguard_map(path, artifact, prefs, hot_fn, vguard_source_ranges(a, ranges, hot_fn),
-+		ssa_sha256)!
++		ssa_sha256, if (m.vguard_track_ast || native_memory) && prefs.backend in [
++			'amd64',
++			'arm64',
++		] {
++			vguard_value_homes_json(m, homes, hot_fn)
++		} else {
++			''
++		}, native_memory)!
++}
++
++fn vguard_value_homes_json(m &ssa.Module, homes []ssa.VGuardValueHome, hot_fn string) string {
++	mut output := strings.new_builder(1024)
++	output.write_u8(`[`)
++	for home in homes {
++		if m.values[home.value].typ == 0 || (hot_fn != '' && home.function != hot_fn) {
++			continue
++		}
++		if output.len > 1 {
++			output.write_u8(`,`)
++		}
++		output.write_string('{"function":${vguard_json_string(home.function)},"value":${home.value}')
++		// Only scalar SSA definitions and arguments have homes with recoverable bits.
++		value := m.values[home.value]
++		width := m.vguard_scalar_width(home.value)
++		if m.vguard_track_ast && width > 0 && value.kind in [.argument, .instruction, .phi_result]
++			&& (home.frame_offset != 0 || home.register != '' || home.object_offset != 0) {
++			output.write_string(',"snapshot_bytes":${width}')
++			if value.kind == .argument {
++				output.write_string(',"snapshot_argument":true')
++				entry := home.argument_entry
++				if entry.ready > 0 {
++					output.write_string(',"argument_entry":{"ready":${entry.ready}')
++					if entry.register != '' {
++						output.write_string(',"register":${vguard_json_string(entry.register)}')
++						if entry.preserve_register {
++							output.write_string(',"preserve_register":true')
++						}
++					} else {
++						output.write_string(',"stack_offset":${entry.stack_offset}')
++						output.write_string(',"stack_adjusted":${entry.stack_adjusted},"frame_ready":${entry.frame_ready}')
++					}
++					output.write_u8(`}`)
++				}
++			}
++		}
++		if home.register != '' {
++			output.write_string(',"register":${vguard_json_string(home.register)}')
++		}
++		if home.frame_offset != 0 {
++			output.write_string(',"frame_offset":${home.frame_offset}')
++		}
++		if home.object_offset != 0 {
++			output.write_string(',"object_offset":${home.object_offset}')
++			if home.object_size != 0 {
++				output.write_string(',"object_size":${home.object_size},"redzone_before":${home.redzone_before},"redzone_after":${home.redzone_after}')
++			}
++			if home.object_alignment != 0 {
++				output.write_string(',"object_alignment":${home.object_alignment}')
++			}
++		}
++		output.write_u8(`}`)
++	}
++	output.write_u8(`]`)
++	return output.str()
 +}
 +
 +// Save the final IR and preserve the same ValueIDs used by the emission ranges.
@@ -505,16 +1122,27 @@ index 0000000000..acedcef345
 +		}
 +		pos := a.source_position(r.pos) or { token.Position{} }
 +		result << VGuardSourceRange{
-+			function: r.function
-+			symbol:   r.symbol
-+			body:     r.body
-+			start:    r.start
-+			end:      r.end
-+			value:    r.value
-+			op:       r.op.str()
-+			file:     pos.filename
-+			line:     pos.line
-+			column:   pos.column
++			function:        r.function
++			symbol:          r.symbol
++			body:            r.body
++			start:           r.start
++			end:             r.end
++			value:           r.value
++			op:              r.op.str()
++			file:            pos.filename
++			line:            pos.line
++			column:          pos.column
++			recovery_prefix: r.recovery_prefix
++			return_home:     VGuardReturnHomeRecord{
++				value:    r.return_home.value
++				bytes:    r.return_home.bytes
++				register: r.return_home.register
++			}
++			control_homes:   VGuardControlHomesRecord{
++				prefix_through:    r.control_homes.prefix_through
++				alternate_start:   r.control_homes.alternate_start
++				alternate_through: r.control_homes.alternate_through
++			}
 +		}
 +	}
 +	return result
@@ -530,10 +1158,10 @@ index 0000000000..acedcef345
 +}
 diff --git a/vlib/v/driver/vguard_trace.v b/vlib/v/driver/vguard_trace.v
 new file mode 100644
-index 0000000000..7851359689
+index 0000000000..79d85ba336
 --- /dev/null
 +++ b/vlib/v/driver/vguard_trace.v
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,351 @@
 +module driver
 +
 +import crypto.sha256
@@ -546,11 +1174,18 @@ index 0000000000..7851359689
 +
 +struct VGuardEdit {
 +	offset int
++	skip   int
 +	order  int
 +	text   string
 +}
 +
-+fn stage_vguard_trace(input string, prefs &pref.Preferences, calls bool) !(string, string) {
++struct VGuardTraceOptions {
++	scalars bool
++	calls   bool
++	hangs   bool
++}
++
++fn stage_vguard_trace(input string, prefs &pref.Preferences, options VGuardTraceOptions) !(string, string) {
 +	root := os.join_path(os.vtmp_dir(), 'vguard-trace-' + tempname.unique_token())
 +	os.mkdir(root)!
 +	mut success := false
@@ -561,18 +1196,18 @@ index 0000000000..7851359689
 +	}
 +	staged := os.join_path(root, os.file_name(os.real_path(input)))
 +	if os.is_dir(input) {
-+		vguard_trace_dir(os.real_path(input), staged, prefs, calls)!
++		vguard_trace_dir(os.real_path(input), staged, prefs, options)!
 +	} else {
 +		if !input.ends_with('.v') {
 +			return error('VGuard tracing requires a V source file or project directory')
 +		}
-+		os.write_file(staged, vguard_trace_source(os.real_path(input), prefs, calls)!)!
++		os.write_file(staged, vguard_trace_source(os.real_path(input), prefs, options)!)!
 +	}
 +	success = true
 +	return staged, root
 +}
 +
-+fn vguard_trace_dir(input string, output string, prefs &pref.Preferences, calls bool) ! {
++fn vguard_trace_dir(input string, output string, prefs &pref.Preferences, options VGuardTraceOptions) ! {
 +	os.mkdir(output)!
 +	for name in os.ls(input)! {
 +		if name == '.git' {
@@ -587,38 +1222,124 @@ index 0000000000..7851359689
 +			os.cp_all(src, dst, false)!
 +		} else if name.ends_with('.v') && !name.ends_with('_test.v')
 +			&& !pref.file_has_incompatible_target_suffix(name, prefs.target) {
-+			os.write_file(dst, vguard_trace_source(src, prefs, calls)!)!
++			os.write_file(dst, vguard_trace_source(src, prefs, options)!)!
 +		} else {
 +			os.cp(src, dst)!
 +		}
 +	}
 +}
 +
-+fn vguard_trace_source(path string, prefs &pref.Preferences, calls bool) !string {
++fn vguard_trace_source(path string, prefs &pref.Preferences, options VGuardTraceOptions) !string {
 +	source := os.read_file(path)!
 +	mut p := parser.Parser.new(prefs)
-+	p.vguard_record_entries = calls
++	p.vguard_record_entries = options.calls
++	p.vguard_record_loops = options.hangs
 +	a := p.parse_text(path, source)
 +	fastc := prefs.backend == 'fastc'
 +	limited := fastc || 'vguard_fastc_trace' in prefs.user_defines
++	trace_memory := prefs.backend == 'c' && 'vguard_access_trace' in prefs.user_defines
 +	helper := 'vguard_trace_value_' + sha256.hexhash(path)[..16]
++	emitter := helper + '_emit'
++	loop_emitter := helper + '_loop'
++	mut loop_instrumented := false
 +	mut edits := []VGuardEdit{}
++	for loop in p.vguard_loops {
++		body := loop.body
++		loop_pos := loop.pos
++		file := a.source_files[loop_pos.id] or { continue }
++		if file.name != path {
++			continue
++		}
++		if body <= 0 || body > source.len || source[body - 1] != `{` {
++			continue
++		}
++		pos := a.source_position(loop_pos) or { continue }
++		site := pos.filename.bytes().hex()
++		// An inserted declaration would take over a label attached to the loop.
++		if loop.proof in ['', 'constant_control_loop'] && (loop.labeled || loop_pos.offset < 0
++			|| source[..int(loop_pos.offset)].trim_right(' \t\r\n').ends_with(':')) {
++			continue
++		}
++		if loop.proof == '' {
++			if loop.end <= body || loop.end > source.len || source[loop.end - 1] != `}` {
++				continue
++			}
++			loop_instrumented = true
++			count := 'vguard_loop_' + sha256.hexhash(path + loop_pos.offset.str())[..16]
++			prefix := '\\x1eVGUARD-'
++			fields := '\\t${site}\\t${pos.line}\\t${pos.column}\\t'
++			edits << VGuardEdit{
++				offset: int(loop_pos.offset)
++				text:   'mut ${count} := u64(0)\n'
++			}
++			edits << VGuardEdit{
++				offset: body
++				order:  -1
++				text:   "\n${count}++\nif ${count} >= 64 && (${count} & (${count} - 1)) == 0 {\n${loop_emitter}('${prefix}LOOP_PROGRESS${fields}' + v_getpid().str() + '\\t' + v_gettid().str() + '\\t' + ${count}.str())\n}\n"
++			}
++			edits << VGuardEdit{
++				offset: loop.end
++				text:   "\nif ${count} >= 64 {\n${loop_emitter}('${prefix}LOOP_EXIT${fields}' + v_getpid().str() + '\\t' + v_gettid().str() + '\\t' + ${count}.str())\n}\n"
++			}
++			continue
++		}
++		if loop.proof == 'constant_control_loop' {
++			// Keep the original control flow, including its dormant branches.
++			entered := 'vguard_entered_' + sha256.hexhash(path + loop_pos.offset.str())[..16]
++			message := "'\\x1eVGUARD-LOOP_PROVEN\\t${site}\\t${pos.line}\\t${pos.column}\\t' + v_getpid().str() + '\\t${loop.proof}'"
++			edits << VGuardEdit{
++				offset: int(loop_pos.offset)
++				text:   'mut ${entered} := false\n'
++			}
++			edits << VGuardEdit{
++				offset: body
++				order:  -1
++				text:   '\nif !${entered} {\n${entered} = true\n${loop_emitter}(${message})\n}\n'
++			}
++			loop_instrumented = true
++			continue
++		}
++		loop_instrumented = true
++		position := if loop.continue_pos.is_valid() { int(loop.continue_pos.offset) } else { body }
++		skip := if loop.continue_pos.is_valid() { int(loop.continue_pos.end) - position } else { 0 }
++		if position < body || skip < 0 || position + skip >= loop.end {
++			continue
++		}
++		tag := if loop.proof == 'empty_unconditional_loop' { 'LOOP' } else { 'LOOP_PROVEN' }
++		suffix := if tag == 'LOOP' { '' } else { " + '\\t${loop.proof}'" }
++		edits << VGuardEdit{
++			offset: position
++			skip:   skip
++			text:   "\n\t${loop_emitter}('\\x1eVGUARD-${tag}\\t${site}\\t${pos.line}\\t${pos.column}\\t' + v_getpid().str()${suffix})\n\tfor {}\n"
++		}
++	}
 +	mut seen := map[u64]bool{}
 +	mut fastc_types := map[string]bool{}
 +	for index, node in a.nodes {
-+		if calls {
++		if options.calls {
 +			if offset := p.vguard_entry_offsets[index] {
 +				if offset > 0 && offset <= source.len && source[offset - 1] == `{` {
 +					pos := a.source_position(node.pos) or { continue }
 +					site := pos.filename.bytes().hex()
 +					name := node.value.bytes().hex()
++					message := "'\\x1eVGUARD\\t${site}\\t${pos.line}\\t${pos.column}\\tfunction_enter\\t${name}'"
++					entry_call := if fastc {
++						'${emitter}(${message})'
++					} else if trace_memory {
++						"${emitter}(${message}, '')"
++					} else {
++						'eprintln(${message})'
++					}
 +					edits << VGuardEdit{
 +						offset: offset
 +						order:  -source.len * 2 - 1
-+						text:   "\n\teprintln('\\x1eVGUARD\\t${site}\\t${pos.line}\\t${pos.column}\\tfunction_enter\\t${name}')\n"
++						text:   '\n\t${entry_call}\n'
 +					}
 +				}
 +			}
++		}
++		if !options.scalars {
++			continue
 +		}
 +		mut child := 0
 +		kind := match node.kind {
@@ -692,16 +1413,34 @@ index 0000000000..7851359689
 +	mut result := strings.new_builder(source.len + edits.len * 64)
 +	mut cursor := 0
 +	for edit in edits {
++		if edit.offset < cursor {
++			return error('overlapping VGuard source instrumentation')
++		}
 +		result.write_string(source[cursor..edit.offset])
 +		result.write_string(edit.text)
-+		cursor = edit.offset
++		cursor = edit.offset + edit.skip
 +	}
 +	result.write_string(source[cursor..])
++	if loop_instrumented {
++		result.writeln('')
++		result.writeln('fn ${loop_emitter}(message string) {')
++		result.writeln(r"	C.fprintf(C.stderr, c'%.*s\n', message.len, message.str)")
++		result.writeln('}')
++	}
++	if !options.scalars {
++		return result.str()
++	}
 +	result.writeln('')
 +	if limited {
 +		if fastc {
 +			result.writeln('#include <stdio.h>')
 +			result.writeln('fn C.fprintf(stream voidptr, format &char, ...) int')
++			if options.calls {
++				result.writeln('fn ${emitter}(message string) {')
++				result.writeln(r"	format := '%s\n'")
++				result.writeln('	C.fprintf(C.stderr, format, message)')
++				result.writeln('}')
++			}
 +		}
 +		for name in ['int', 'bool'] {
 +			if name !in fastc_types {
@@ -726,20 +1465,53 @@ index 0000000000..7851359689
 +		}
 +		return result.str()
 +	}
++	if trace_memory {
++		// Checkpoints share stderr with the memory callbacks. Emit each as one record.
++		result.writeln('fn ${emitter}(site string, value string) {')
++		result.writeln(r"	C.fprintf(C.stderr, c'%.*s%.*s\n', site.len, site.str, value.len, value.str)")
++		result.writeln('}')
++	}
 +	result.writeln('fn ${helper}[T](site string, value T) T {')
 +	result.writeln(r'	$if T is bool || T is $int {')
-+	result.writeln('		eprint(site)')
-+	result.writeln('		eprintln(value)')
++	if trace_memory {
++		result.writeln('\t\t${emitter}(site, value.str())')
++	} else {
++		result.writeln('		eprint(site)')
++		result.writeln('		eprintln(value)')
++	}
 +	result.writeln(r'	} $else $if T is f32 {')
-+	result.writeln('		eprint(site)')
-+	result.writeln('		eprintln(unsafe { *(&u32(&value)) })')
++	if trace_memory {
++		result.writeln('\t\tu32_bits := unsafe { *(&u32(&value)) }')
++		result.writeln('\t\t${emitter}(site, u32_bits.str())')
++	} else {
++		result.writeln('		eprint(site)')
++		result.writeln('		eprintln(unsafe { *(&u32(&value)) })')
++	}
 +	result.writeln(r'	} $else $if T is f64 {')
-+	result.writeln('		eprint(site)')
-+	result.writeln('		eprintln(unsafe { *(&u64(&value)) })')
++	if trace_memory {
++		result.writeln('\t\tu64_bits := unsafe { *(&u64(&value)) }')
++		result.writeln('\t\t${emitter}(site, u64_bits.str())')
++	} else {
++		result.writeln('		eprint(site)')
++		result.writeln('		eprintln(unsafe { *(&u64(&value)) })')
++	}
 +	result.writeln('	}')
 +	result.writeln('	return value')
 +	result.writeln('}')
 +	return result.str()
++}
++
++fn vguard_runtime_source_files(a &flat.FlatAst, input string) map[int]bool {
++	path := os.real_path(input)
++	directory := os.is_dir(path)
++	mut files := map[int]bool{}
++	for id, source in a.source_files {
++		name := os.real_path(source.name)
++		if name == path || (directory && name.starts_with(path + os.path_separator)) {
++			files[id] = true
++		}
++	}
++	return files
 +}
 diff --git a/vlib/v/errors/json.v b/vlib/v/errors/json.v
 index e25590886d..404f955a78 100644
@@ -755,18 +1527,51 @@ index e25590886d..404f955a78 100644
  	mut i := 0
  	for i < text.len {
 diff --git a/vlib/v/gen/amd64/gen.v b/vlib/v/gen/amd64/gen.v
-index 0682b6551e..51428f0f19 100644
+index 0682b6551e..fbd99d6e1e 100644
 --- a/vlib/v/gen/amd64/gen.v
 +++ b/vlib/v/gen/amd64/gen.v
-@@ -21,6 +21,7 @@ pub:
+@@ -20,9 +20,18 @@ pub:
+ 
  pub struct Gen {
  	m &ssa.Module
++pub mut:
++	vguard_record_homes bool
++	vguard_memory       bool
  mut:
-+	vguard_ranges []ssa.EmissionRange
- 	elf              &elf.ElfObject
- 	optimize_runtime bool
+-	elf              &elf.ElfObject
+-	optimize_runtime bool
++	vguard_ranges        []ssa.EmissionRange
++	vguard_frame_restore int
++	vguard_branch_homes  ssa.VGuardControlHomes
++	vguard_homes         []ssa.VGuardValueHome
++	vguard_arguments     map[int]ssa.VGuardArgumentEntry
++	vguard_stack_regions map[int]ssa.VGuardStackRegion
++	elf                  &elf.ElfObject
++	optimize_runtime     bool
  
-@@ -287,7 +288,7 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 	stack_map      map[int]int
+ 	alloca_offsets map[int]int
+@@ -278,6 +287,19 @@ fn (mut g Gen) gen_post_pass() {
+ 				}
+ 			}
+ 		}
++		if g.vguard_memory {
++			span := g.m.vguard_global(gvar).span
++			for g.elf.data_data.len < int(addr) + span {
++				g.elf.data_data << 0
++			}
++		}
++	}
++	if g.vguard_memory {
++		count := g.m.vguard_defined_globals().len
++		if count > 0 {
++			g.elf.add_symbol(ssa.vguard_global_table, u64(g.elf.data_data.len), false, 2)
++			g.elf.data_data << []u8{len: count * ssa.vguard_global_record_size}
++		}
+ 	}
+ }
+ 
+@@ -287,7 +309,7 @@ fn (mut g Gen) gen_func(func ssa.Function) {
  	}
  	dump_filter := os.getenv('V_X64_DUMP_SSA')
  	if dump_filter.len > 0 && func.name.contains(dump_filter) {
@@ -775,15 +1580,111 @@ index 0682b6551e..51428f0f19 100644
  	}
  	if func.blocks.len == 0 {
  		// Leave unsupported bodies undefined so the linker reports the missing implementation.
-@@ -589,37 +590,17 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+@@ -295,6 +317,9 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 	}
+ 	g.curr_offset = g.elf.text_data.len
+ 	g.stack_map = map[int]int{}
++	if g.vguard_memory {
++		g.vguard_stack_regions.clear()
++	}
+ 	g.alloca_offsets = map[int]int{}
+ 	g.block_offsets = map[int]int{}
+ 	g.pending_labels = map[int][]int{}
+@@ -423,8 +448,15 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 
+ 				// Align to 16 bytes
+ 				slot_offset = (slot_offset + 15) & ~0xF
+-				slot_offset += alloc_size
+-				g.alloca_offsets[val_id] = -slot_offset
++				if g.vguard_memory && g.m.type_align(ptr_type.elem_type) <= 16 {
++					region := ssa.vguard_stack_region(slot_offset, alloc_size)
++					g.vguard_stack_regions[val_id] = region
++					g.alloca_offsets[val_id] = region.offset
++					slot_offset = -region.offset + region.before
++				} else {
++					slot_offset += alloc_size
++					g.alloca_offsets[val_id] = -slot_offset
++				}
+ 				slot_offset += 8 // Slot for the pointer
+ 				g.stack_map[val_id] = -slot_offset
+ 			}
+@@ -510,7 +542,9 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 	// Prologue
+ 	asm_endbr64(mut g)
+ 	asm_push_rbp(mut g)
++	stack_adjusted := g.elf.text_data.len - g.curr_offset
+ 	asm_mov_rbp_rsp(mut g)
++	frame_ready := g.elf.text_data.len - g.curr_offset
+ 
+ 	// Push callee-saved regs
+ 	for r in g.used_regs {
+@@ -546,6 +580,9 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 	if g.cur_func_abi_ret_indirect && g.sret_save_offset != 0 {
+ 		asm_store_rbp_disp_reg(mut g, g.sret_save_offset, rdi)
+ 	}
++	if g.m.vguard_track_ast {
++		g.vguard_arguments.clear()
++	}
+ 	for i, pid in func.params {
+ 		is_indirect_param := i < g.cur_func_param_indirect.len
+ 			&& g.cur_func_param_indirect[i]
+@@ -573,8 +610,44 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 				asm_store_rbp_disp_reg(mut g, offset, rax)
+ 			}
+ 		}
++		if g.m.vguard_track_ast && !is_indirect_param && g.m.vguard_scalar_width(pid) > 0 {
++			ready := g.elf.text_data.len - g.curr_offset
++			g.vguard_arguments[pid] = if i < num_reg_args {
++				ssa.VGuardArgumentEntry{
++					register: asm_register_names[abi_regs[i + arg_reg_base]]
++					ready: ready
++					// The prologue's global stores in main use rcx as scratch.
++					preserve_register: func.name != 'main'
++				}
++			} else {
++				ssa.VGuardArgumentEntry{
++					stack_offset: 8 + (i - num_reg_args) * 8
++					ready: ready
++					stack_adjusted: stack_adjusted
++					frame_ready: frame_ready
++				}
++			}
++		}
++	}
++	if g.vguard_record_homes {
++		g.record_vguard_homes(func.name)
+ 	}
+ 
++	if g.vguard_memory && func.name == 'main' {
++		g.vguard_register_globals()
++	}
++	if g.vguard_stack_regions.len > 0 {
++		g.vguard_poison_frame()
++	}
++	trace_runtime := g.m.vguard_runtime_function(func)
++	if trace_runtime {
++		g.vguard_trace_event(1, func.blocks[0], -1, 0)
++		for param in func.params {
++			if g.m.vguard_scalar_width(param) > 0 {
++				g.vguard_trace_event(4, param, param, g.m.vguard_scalar_width(param))
++			}
++		}
++	}
+ 	for blk_id in func.blocks {
+ 		blk := g.m.blocks[blk_id]
+ 		g.block_offsets[blk_id] = g.elf.text_data.len - g.curr_offset
+@@ -588,38 +661,71 @@ fn (mut g Gen) gen_func(func ssa.Function) {
+ 			}
  		}
  
- 		for val_id in blk.instrs {
+-		for val_id in blk.instrs {
 -			g.gen_instr(val_id)
--		}
++		if trace_runtime {
++			g.vguard_trace_event(2, blk_id, -1, 0)
+ 		}
 -	}
 -}
- 
+-
 -fn (g &Gen) dump_function(func ssa.Function) {
 -	eprintln('SSA function ${func.name} ret=${func.typ}')
 -	for param in func.params {
@@ -797,6 +1698,7 @@ index 0682b6551e..51428f0f19 100644
 -			value := g.m.values[value_id]
 -			if value.kind != .instruction {
 -				eprintln('SSA ${value_id} kind=${value.kind} typ=${value.typ} name=${value.name}')
++		for val_id in blk.instrs {
 +			if !g.m.vguard_enabled {
 +				g.gen_instr(val_id)
  				continue
@@ -809,27 +1711,771 @@ index 0682b6551e..51428f0f19 100644
 -					operands << '${operand_id}:${operand.kind}:${operand.typ}:${operand.name}'
 -				} else {
 -					operands << '${operand_id}'
--				}
++			mut access_kind := 0
++			if trace_runtime && g.m.values[val_id].kind == .instruction {
++				g.vguard_trace_event(3, val_id, -1, 0)
++				kind, pointer, width := g.m.vguard_memory_operand(val_id)
++				if width > 0 {
++					access_kind = kind
++					g.vguard_trace_event(kind, val_id, pointer, width)
++				}
++			}
 +			start := g.elf.text_data.len - g.curr_offset
 +			g.gen_instr(val_id)
-+			end := g.elf.text_data.len - g.curr_offset
-+			if end > start {
-+				g.vguard_ranges << g.m.emission_range(func.name, func.name, 0, start, end, val_id)
++			emitted := g.elf.text_data.len
++			end := emitted - g.curr_offset
++			if trace_runtime && (end > start || (g.m.values[val_id].kind == .instruction
++				&& g.m.instrs[g.m.values[val_id].index].op == .phi)) {
++				if access_kind != 0 {
++					g.vguard_trace_event(7, val_id, -1, 0)
++				}
++				if g.m.values[val_id].kind == .instruction {
++					value := g.m.vguard_result_value(val_id)
++					width := g.m.vguard_scalar_width(value)
++					if width > 0 && g.vguard_has_home(value) {
++						g.vguard_trace_event(4, value, value, width)
++					}
+ 				}
  			}
 -			eprintln('SSA ${value_id} ${instr.op} typ=${value.typ} ops=${operands}')
++			if end > start {
++				mut range := g.m.emission_range(func.name, func.name, 0, start, end, val_id)
++				if range.op == .ret && g.m.vguard_track_ast {
++					range.recovery_prefix = g.vguard_frame_restore - g.curr_offset - start
++					if !g.cur_func_abi_ret_indirect {
++						range.return_home = g.m.vguard_return_home(val_id, g.cur_func_ret_type,
++							'rax', 'rax')
++					}
++				}
++				if g.m.vguard_track_ast && range.op == .br {
++					boundaries := g.vguard_branch_homes
++					address := g.curr_offset + start
++					range.control_homes = ssa.VGuardControlHomes{
++						prefix_through:    boundaries.prefix_through - address
++						alternate_start:   if boundaries.alternate_start > 0 {
++							boundaries.alternate_start - address
++						} else {
++							0
++						}
++						alternate_through: if boundaries.alternate_through > 0 {
++							boundaries.alternate_through - address
++						} else {
++							0
++						}
++					}
++				}
++				if g.m.vguard_track_ast && range.op == .switch_ {
++					range.control_homes = ssa.VGuardControlHomes{ prefix_through: end - start }
++				}
++				g.vguard_ranges << range
++			}
  		}
  	}
  }
-@@ -2772,3 +2753,9 @@ pub fn (mut g Gen) write_and_link(output string) {
+@@ -1029,6 +1135,9 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 			}
+ 			g.store_reg_to_val(0, val_id)
+ 		}
++		.atomic_load, .atomic_store, .atomic_xchg, .atomic_add, .atomic_sub, .cmpxchg, .fence {
++			g.gen_vguard_atomic(val_id, instr)
++		}
+ 		.store {
+ 			src_id := instr.operands[0]
+ 			ptr_id := instr.operands[1]
+@@ -1052,11 +1161,18 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 				}
+ 			}
+ 			if g.is_zero_const(src_id) && g.is_aggregate_type(dst_type) {
++				if g.vguard_memory && dst_elem_size > 0 {
++					g.load_val_to_reg(int(rdi), ptr_id)
++					g.vguard_check_region(dst_elem_size, true)
++				}
+ 				g.load_val_to_reg(int(r11), ptr_id)
+ 				asm_xor_reg_reg(mut g, rax)
+-				for off := 0; off < dst_elem_size; off += 8 {
++				mut off := 0
++				for off + 8 <= dst_elem_size {
+ 					asm_mov_mem_base_disp_rax(mut g, r11, off)
++					off += 8
+ 				}
++				g.emit_aggregate_store_tail(r11, off, dst_elem_size - off)
+ 				return
+ 			}
+ 
+@@ -1075,13 +1191,24 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 					g.load_val_to_reg(int(r11), ptr_id)
+ 					g.emit_copy_memory(r11, r10, dst_elem_size)
+ 				} else {
++					if g.vguard_memory {
++						g.load_val_to_reg(int(rdi), ptr_id)
++						g.vguard_check_region(dst_elem_size, true)
++					}
+ 					g.load_val_to_reg(0, src_id)
+ 					g.load_val_to_reg(1, ptr_id)
+-					asm_mov_mem_rcx_rax(mut g)
++					if dst_elem_size == 8 {
++						asm_mov_mem_rcx_rax(mut g)
++					} else {
++						g.emit_aggregate_store_tail(rcx, 0, dst_elem_size)
++					}
+ 				}
+ 			} else {
+ 				// Sized scalar store
+ 				store_size := if dst_elem_size > 0 { dst_elem_size } else { src_size }
++				if g.vguard_memory {
++					g.vguard_check_scalar(ptr_id, store_size, true)
++				}
+ 				g.load_val_to_reg(0, src_id) // Val -> RAX
+ 				g.load_val_to_reg(1, ptr_id) // Ptr -> RCX
+ 				match store_size {
+@@ -1120,6 +1247,10 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 							g.emit_copy_memory(r11, r10, elem_size)
+ 						} else {
+ 							// Single qword fallback
++							if g.vguard_memory {
++								g.vguard_check_scalar(ptr_id, 8, false)
++								g.load_val_to_reg(int(r10), ptr_id)
++							}
+ 							asm_mov_rax_mem_base_disp(mut g, r10, 0)
+ 							g.store_reg_to_val(0, val_id)
+ 						}
+@@ -1130,6 +1261,10 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 			if load_size <= 0 {
+ 				load_size = 8
+ 			}
++
++			if g.vguard_memory {
++				g.vguard_check_scalar(ptr_id, load_size, false)
++			}
+ 			g.load_val_to_reg(1, ptr_id) // Ptr -> RCX
+ 			match load_size {
+ 				1 {
+@@ -1240,6 +1375,9 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 			g.gen_call(val_id, instr)
+ 		}
+ 		.ret {
++			if g.vguard_stack_regions.len > 0 {
++				g.vguard_unpoison_frame()
++			}
+ 			if g.cur_func_abi_ret_indirect {
+ 				if g.sret_save_offset != 0 {
+ 					asm_load_reg_rbp_disp(mut g, rdi, g.sret_save_offset)
+@@ -1260,6 +1398,9 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 				asm_xor_eax_eax(mut g)
+ 			}
+ 			// Cleanup Stack
++			if g.m.vguard_track_ast {
++				g.vguard_frame_restore = g.elf.text_data.len
++			}
+ 			if g.stack_size > 0 {
+ 				if g.stack_size <= 127 {
+ 					asm_add_rsp_imm8(mut g, u8(g.stack_size))
+@@ -1298,11 +1439,24 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 			patch_offset := g.elf.text_data.len
+ 			g.emit_u32(0)
+ 			g.emit_phi_edge_copies(instr.block, false_blk)
++			false_copies := g.m.vguard_track_ast && g.elf.text_data.len > patch_offset + 4
+ 			g.emit_jmp(false_blk)
+ 			true_stub := g.elf.text_data.len - g.curr_offset
+ 			rel := true_stub - (patch_offset + 4 - g.curr_offset)
+ 			g.write_u32(patch_offset, u32(rel))
+ 			g.emit_phi_edge_copies(instr.block, true_blk)
++			if g.m.vguard_track_ast {
++				true_address := g.curr_offset + true_stub
++				has_true_copies := g.elf.text_data.len > true_address
++				true_through := if has_true_copies { true_address } else { g.elf.text_data.len }
++				// The true stub starts from the branch state even when the
++				// earlier false stub writes phi homes.
++				g.vguard_branch_homes = ssa.VGuardControlHomes{
++					prefix_through:    if false_copies { patch_offset + 4 } else { true_through }
++					alternate_start:   if false_copies { true_address } else { 0 }
++					alternate_through: if false_copies { true_through } else { 0 }
++				}
++			}
+ 			g.emit_jmp(true_blk)
+ 		}
+ 		.switch_ {
+@@ -1936,6 +2090,14 @@ fn (g &Gen) c_symbol(name string) string {
+ 	if mapped := g.m.export_c_names[name] {
+ 		return mapped
+ 	}
++	if g.m.vguard_native_atomics {
++		// Native ASan builds use libc to allocate and free their pthread-key slots.
++		match name {
++			'v_native_tls_calloc' { return 'calloc' }
++			'v_native_tls_free' { return 'free' }
++			else {}
++		}
++	}
+ 	return name
+ }
+ 
+@@ -2645,9 +2807,47 @@ fn (mut g Gen) emit_sized_load_base_disp(base Reg, disp int, size int) {
+ 	}
+ }
+ 
++// emit_aggregate_store_tail writes the remaining low-order bytes of RAX.
++fn (mut g Gen) emit_aggregate_store_tail(base Reg, start int, size int) {
++	mut offset := start
++	end := start + size
++	for width in [4, 2, 1] {
++		if width > end - offset {
++			continue
++		}
++		match width {
++			4 { asm_store_dword_base_disp(mut g, base, offset) }
++			2 { asm_store_word_base_disp(mut g, base, offset) }
++			else { asm_store_byte_base_disp(mut g, base, offset) }
++		}
++		offset += width
++		if offset < end {
++			g.emit(0x48)
++			g.emit(0xc1)
++			g.emit(0xe8)
++			g.emit(u8(width * 8)) // shr rax, immediate
++		}
++	}
++}
++
+ // emit_copy_memory copies exactly `size` bytes without reading or writing past
+ // either aggregate. Struct sizes are not always multiples of eight.
+ fn (mut g Gen) emit_copy_memory(dst Reg, src Reg, size int) {
++	if g.vguard_memory && size > 0 {
++		// Both call-site addresses must survive the shadow runtime calls.
++		asm_push(mut g, src)
++		asm_push(mut g, dst)
++		asm_mov_reg_reg(mut g, rdi, src)
++		g.vguard_check_region(size, false)
++		asm_pop(mut g, dst)
++		asm_pop(mut g, src)
++		asm_push(mut g, src)
++		asm_push(mut g, dst)
++		asm_mov_reg_reg(mut g, rdi, dst)
++		g.vguard_check_region(size, true)
++		asm_pop(mut g, dst)
++		asm_pop(mut g, src)
++	}
+ 	mut offset := 0
+ 	for offset + 8 <= size {
+ 		g.emit_sized_load_base_disp(src, offset, 8)
+@@ -2772,3 +2972,8 @@ pub fn (mut g Gen) write_and_link(output string) {
  		panic('amd64 link failed:\n${result.output}')
  	}
  }
 +
-+
 +// vguard_emission_ranges returns instruction ranges recorded for VGuard.
 +pub fn (g &Gen) vguard_emission_ranges() []ssa.EmissionRange {
-+    return g.vguard_ranges
++	return g.vguard_ranges
 +}
+diff --git a/vlib/v/gen/amd64/vguard.v b/vlib/v/gen/amd64/vguard.v
+new file mode 100644
+index 0000000000..898a456b79
+--- /dev/null
++++ b/vlib/v/gen/amd64/vguard.v
+@@ -0,0 +1,35 @@
++module amd64
++
++import v.ssa
++
++fn (mut g Gen) record_vguard_homes(function string) {
++	for value in g.stack_map.keys().sorted() {
++		region := g.vguard_stack_regions[value]
++		g.vguard_homes << ssa.VGuardValueHome{
++			function:       function
++			value:          value
++			register:       if reg := g.reg_map[value] { asm_register_names[reg] } else { '' }
++			frame_offset:   g.stack_map[value]
++			object_offset:  g.alloca_offsets[value]
++			object_size:    region.size
++			redzone_before: region.before
++			redzone_after:  region.after
++			argument_entry: g.vguard_arguments[value]
++		}
++	}
++	for value in g.reg_map.keys().sorted() {
++		if value !in g.stack_map {
++			g.vguard_homes << ssa.VGuardValueHome{
++				function:       function
++				value:          value
++				register:       asm_register_names[g.reg_map[value]]
++				argument_entry: g.vguard_arguments[value]
++			}
++		}
++	}
++}
++
++// vguard_value_homes returns the assignments from emitted functions.
++pub fn (g &Gen) vguard_value_homes() []ssa.VGuardValueHome {
++	return g.vguard_homes
++}
+diff --git a/vlib/v/gen/amd64/vguard_atomic.v b/vlib/v/gen/amd64/vguard_atomic.v
+new file mode 100644
+index 0000000000..b373caea2f
+--- /dev/null
++++ b/vlib/v/gen/amd64/vguard_atomic.v
+@@ -0,0 +1,63 @@
++module amd64
++
++import v.ssa
++
++// x86-64 needs a locked store or read-modify-write for a sequentially
++// consistent write. Load ordering follows the native x86-64 memory model.
++fn (mut g Gen) gen_vguard_atomic(val_id int, instr ssa.Instruction) {
++	if instr.op == .fence {
++		g.emit(0x0f)
++		g.emit(0xae)
++		g.emit(0xf0) // mfence
++		return
++	}
++	is_store := instr.op == .atomic_store
++	ptr_id := if is_store { instr.operands[1] } else { instr.operands[0] }
++	typ := g.m.values[if is_store { instr.operands[0] } else { val_id }].typ
++	width := g.m.type_size(typ)
++	if g.vguard_memory {
++		g.vguard_check_scalar(ptr_id, width, instr.op != .atomic_load)
++	}
++	g.load_val_to_reg(int(r11), ptr_id)
++	if instr.op == .atomic_load {
++		g.emit_sized_load_base_disp(r11, 0, width)
++	} else {
++		input := if is_store { instr.operands[0] } else { instr.operands[1] }
++		g.load_val_to_reg(int(r10), input)
++		if instr.op == .cmpxchg {
++			asm_mov_reg_reg(mut g, rax, r10)
++			g.load_val_to_reg(int(r10), instr.operands[2])
++		}
++		if instr.op == .atomic_sub {
++			g.emit(0x49)
++			g.emit(0xf7)
++			g.emit(0xda) // neg r10
++		}
++		exchange := instr.op in [.atomic_store, .atomic_xchg]
++		if !exchange {
++			g.emit(0xf0) // lock
++		}
++		if width == 2 {
++			g.emit(0x66)
++		}
++		g.emit(if width == 8 { u8(0x4d) } else { u8(0x45) })
++		narrow := if width == 1 { u8(0) } else { u8(1) }
++		if exchange {
++			g.emit(0x86 + narrow) // xchg [r11], r10
++		} else {
++			g.emit(0x0f)
++			g.emit(if instr.op == .cmpxchg { 0xb0 + narrow } else { 0xc0 + narrow })
++		}
++		g.emit(0x13) // ModRM [r11], r10
++		if !is_store && instr.op != .cmpxchg {
++			asm_mov_reg_reg(mut g, rax, r10)
++		}
++	}
++	if !is_store {
++		info := g.m.type_store.types[typ]
++		if info.kind == .int_t && info.width < 64 {
++			g.canonicalize_narrow_int(info)
++		}
++		g.store_reg_to_val(int(rax), val_id)
++	}
++}
+diff --git a/vlib/v/gen/amd64/vguard_memory.v b/vlib/v/gen/amd64/vguard_memory.v
+new file mode 100644
+index 0000000000..d0cf48f27e
+--- /dev/null
++++ b/vlib/v/gen/amd64/vguard_memory.v
+@@ -0,0 +1,101 @@
++module amd64
++
++import v.ssa
++
++fn (mut g Gen) vguard_check_scalar(ptr_id int, width int, write bool) {
++	g.load_val_to_reg(int(rdi), ptr_id)
++	g.vguard_check_region(if width in [1, 2, 4] { width } else { 8 }, write)
++}
++
++fn (mut g Gen) vguard_check_region(size int, write bool) {
++	g.vguard_shadow_call('__asan_region_is_poisoned', size)
++	asm_test_rax_rax(mut g)
++	asm_je_rel32(mut g)
++	skip := g.elf.text_data.len
++	g.emit_u32(0)
++	// Report with the generated frame's PC, frame pointer and stack pointer.
++	asm_mov_reg_reg(mut g, rcx, rax)
++	asm_lea_reg_rip(mut g, rdi)
++	g.emit_u32(0)
++	asm_mov_reg_reg(mut g, rsi, rbp)
++	asm_mov_reg_reg(mut g, rdx, rsp)
++	asm_mov_reg_imm64(mut g, r8, u64(if write { 1 } else { 0 }))
++	asm_mov_reg_imm64(mut g, r9, u64(size))
++	g.vguard_runtime_call('__asan_report_error')
++	g.write_u32(skip, u32(g.elf.text_data.len - (skip + 4)))
++}
++
++fn (mut g Gen) vguard_poison_frame() {
++	for value in g.vguard_stack_regions.keys().sorted() {
++		region := g.vguard_stack_regions[value]
++		asm_lea_rbp_disp(mut g, rdi, region.offset - region.before)
++		g.vguard_shadow_call('__asan_poison_memory_region', region.before)
++		asm_lea_rbp_disp(mut g, rdi, region.offset + region.size)
++		g.vguard_shadow_call('__asan_poison_memory_region', region.after)
++	}
++}
++
++fn (mut g Gen) vguard_unpoison_frame() {
++	size := g.stack_size + g.used_regs.len * 8
++	asm_lea_rbp_disp(mut g, rdi, -size)
++	g.vguard_shadow_call('__asan_unpoison_memory_region', size)
++}
++
++fn (mut g Gen) vguard_shadow_call(name string, size int) {
++	asm_mov_reg_imm64(mut g, rsi, u64(size))
++	g.vguard_runtime_call(name)
++}
++
++fn (mut g Gen) vguard_runtime_call(name string) {
++	aligned := g.used_regs.len % 2 == 0
++	if !aligned {
++		asm_sub_rsp_imm8(mut g, 8)
++	}
++	asm_call_rel32(mut g)
++	symbol := g.elf.add_undefined(name)
++	g.elf.add_text_reloc(u64(g.elf.text_data.len), symbol, r_x86_64_plt32, -4)
++	g.emit_u32(0)
++	if !aligned {
++		asm_add_rsp_imm8(mut g, 8)
++	}
++}
++
++fn (mut g Gen) vguard_register_globals() {
++	globals := g.m.vguard_defined_globals()
++	if globals.len == 0 {
++		return
++	}
++	module_name := g.vguard_global_name('VGuard native globals')
++	table := g.elf.add_undefined(ssa.vguard_global_table)
++	g.vguard_rip_address(r10, table)
++	for index, global in globals {
++		offset := index * ssa.vguard_global_record_size
++		address := g.elf.add_undefined(global.name)
++		g.vguard_rip_address(rax, address)
++		asm_mov_mem_base_disp_rax(mut g, r10, offset)
++		asm_mov_reg_imm64(mut g, rax, u64(global.size))
++		asm_mov_mem_base_disp_rax(mut g, r10, offset + 8)
++		asm_mov_reg_imm64(mut g, rax, u64(global.span))
++		asm_mov_mem_base_disp_rax(mut g, r10, offset + 16)
++		name := g.vguard_global_name(global.name)
++		g.vguard_rip_address(rax, name)
++		asm_mov_mem_base_disp_rax(mut g, r10, offset + 24)
++		g.vguard_rip_address(rax, module_name)
++		asm_mov_mem_base_disp_rax(mut g, r10, offset + 32)
++	}
++	asm_mov_reg_reg(mut g, rdi, r10)
++	g.vguard_shadow_call('__asan_register_globals', globals.len)
++}
++
++fn (mut g Gen) vguard_global_name(name string) int {
++	start := g.elf.rodata.len
++	g.elf.rodata << name.bytes()
++	g.elf.rodata << 0
++	return g.elf.add_symbol('vguard.asan.name.${start}', u64(start), false, 3)
++}
++
++fn (mut g Gen) vguard_rip_address(reg Reg, symbol int) {
++	asm_lea_reg_rip(mut g, reg)
++	g.elf.add_text_reloc(u64(g.elf.text_data.len), symbol, 2, -4)
++	g.emit_u32(0)
++}
+diff --git a/vlib/v/gen/amd64/vguard_runtime.v b/vlib/v/gen/amd64/vguard_runtime.v
+new file mode 100644
+index 0000000000..fe5e621c9a
+--- /dev/null
++++ b/vlib/v/gen/amd64/vguard_runtime.v
+@@ -0,0 +1,18 @@
++module amd64
++
++fn (g &Gen) vguard_has_home(value int) bool {
++	return value in g.reg_map || value in g.stack_map
++}
++
++fn (mut g Gen) vguard_trace_event(kind int, id int, value int, width int) {
++	if value >= 0 {
++		g.load_val_to_reg(int(rcx), value)
++	} else {
++		asm_mov_reg_imm64(mut g, rcx, 0)
++	}
++	asm_mov_reg_imm64(mut g, rdi, u64(kind))
++	asm_mov_reg_imm64(mut g, rsi, u64(id))
++	asm_mov_reg_reg(mut g, rdx, rbp)
++	asm_mov_reg_imm64(mut g, r8, u64(width))
++	g.vguard_runtime_call('vguard_ssa_event')
++}
+diff --git a/vlib/v/gen/amd64/vguard_test.v b/vlib/v/gen/amd64/vguard_test.v
+new file mode 100644
+index 0000000000..64d8c6e93e
+--- /dev/null
++++ b/vlib/v/gen/amd64/vguard_test.v
+@@ -0,0 +1,124 @@
++module amd64
++
++import v.ssa
++
++fn test_vguard_branch_homes_resume_at_the_other_phi_stub() {
++	mut m := ssa.Module.new()
++	m.vguard_enabled = true
++	integer := m.type_store.get_int(64)
++	function := m.new_function('choose', integer)
++	entry := m.add_block(function, 'entry')
++	then_block := m.add_block(function, 'then')
++	join := m.add_block(function, 'join')
++	cond := m.add_value(.argument, m.type_store.get_int(1), 'condition', 0)
++	m.func_add_param(function, cond)
++	left := m.get_or_add_const(integer, '11')
++	right := m.get_or_add_const(integer, '17')
++	branch := m.add_instr(.br, entry, 0, [cond, ssa.ValueID(then_block), ssa.ValueID(join)])
++	m.add_instr(.jmp, then_block, 0, [ssa.ValueID(join)])
++	selected := m.add_instr(.phi, join, integer, [
++		left,
++		ssa.ValueID(entry),
++		right,
++		ssa.ValueID(then_block),
++	])
++	m.add_instr(.ret, join, 0, [selected])
++
++	mut ordinary := Gen.new(m)
++	ordinary.gen()
++	m.vguard_track_ast = true
++	mut traced := Gen.new(m)
++	traced.gen()
++	assert traced.elf.text_data == ordinary.elf.text_data
++	ranges := traced.vguard_emission_ranges().filter(it.value == branch)
++	assert ranges.len == 1
++	control := ranges[0].control_homes
++	assert control.prefix_through > 0
++	assert control.alternate_start > control.prefix_through
++	assert control.alternate_through == control.alternate_start
++	assert control.alternate_start < ranges[0].end - ranges[0].start
++}
++
++fn test_vguard_records_register_and_frame_assignments_without_changing_code() {
++	mut m := ssa.Module.new()
++	m.vguard_enabled = true
++	integer := m.type_store.get_int(64)
++	pointer := m.type_store.get_ptr(integer)
++	function := m.new_function('sample', integer)
++	entry := m.add_block(function, 'entry')
++	argument := m.add_value(.argument, integer, 'n', 0)
++	m.funcs[function].params << argument
++	one := m.get_or_add_const(integer, '1')
++	slot := m.add_instr(.alloca, entry, pointer, [])
++	result := m.add_instr(.add, entry, integer, [argument, one])
++	m.add_instr(.store, entry, 0, [result, slot])
++	m.add_instr(.ret, entry, 0, [result])
++
++	mut ordinary := Gen.new_with_options(m, GenOptions{ optimize_runtime: true })
++	ordinary.gen()
++	assert ordinary.vguard_value_homes().len == 0
++	mut traced := Gen.new_with_options(m, GenOptions{ optimize_runtime: true })
++	traced.vguard_record_homes = true
++	traced.gen()
++	assert traced.elf.text_data == ordinary.elf.text_data
++	homes := traced.vguard_value_homes()
++	assigned := homes.filter(it.value == result)
++	assert assigned.len == 1
++	assert assigned[0].function == 'sample'
++	assert assigned[0].register == asm_register_names[traced.reg_map[result]]
++	assert assigned[0].register != ''
++	stack := homes.filter(it.value == slot)
++	assert stack.len == 1
++	assert stack[0].object_offset == traced.alloca_offsets[slot]
++	assert stack[0].object_offset < 0
++	assert stack[0].frame_offset == traced.stack_map[slot]
++	assert stack[0].frame_offset < stack[0].object_offset
++	code := traced.vguard_emission_ranges().filter(it.value == result)
++	assert code.len == 1
++	assert code[0].start < code[0].end
++
++	mut memory := Gen.new_with_options(m, GenOptions{ optimize_runtime: true })
++	memory.vguard_record_homes = true
++	memory.vguard_memory = true
++	memory.gen()
++	assert memory.elf.symbols.any(it.name == '__asan_region_is_poisoned')
++	assert memory.elf.symbols.any(it.name == '__asan_report_error')
++	assert memory.elf.symbols.any(it.name == '__asan_poison_memory_region')
++	assert memory.elf.symbols.any(it.name == '__asan_unpoison_memory_region')
++	protected := memory.vguard_value_homes().filter(it.value == slot)
++	assert protected.len == 1
++	assert protected[0].object_size == 8
++	assert protected[0].redzone_before == 32
++	assert protected[0].redzone_after == 40
++}
++
++fn test_vguard_registers_native_global_redzones_only_in_memory_mode() {
++	mut m := ssa.Module.new()
++	integer := m.type_store.get_int(64)
++	m.add_global_with_data('first', integer, true, [u8(7), 0, 0, 0, 0, 0, 0, 0])
++	m.add_global('second', integer)
++	m.add_external_global('external', integer)
++	function := m.new_function('main', integer)
++	entry := m.add_block(function, 'entry')
++	zero := m.get_or_add_const(integer, '0')
++	m.add_instr(.ret, entry, 0, [zero])
++
++	mut ordinary := Gen.new_with_options(m, GenOptions{})
++	ordinary.gen()
++	assert 'vguard.asan.globals' !in ordinary.elf.symbol_by_name
++	assert '__asan_register_globals' !in ordinary.elf.symbol_by_name
++
++	mut memory := Gen.new_with_options(m, GenOptions{})
++	memory.vguard_memory = true
++	memory.gen()
++	first := memory.elf.symbols[memory.elf.symbol_by_name['first']]
++	second := memory.elf.symbols[memory.elf.symbol_by_name['second']]
++	table := memory.elf.symbols[memory.elf.symbol_by_name['vguard.asan.globals']]
++	assert first.value % 8 == 0
++	assert second.value - first.value == 48
++	assert table.value - second.value == 48
++	assert memory.elf.data_data.len - int(table.value) == 2 * ssa.vguard_global_record_size
++	assert memory.elf.data_data[int(first.value)] == 7
++	assert '__asan_register_globals' in memory.elf.symbol_by_name
++	assert memory.elf.rodata.bytestr().contains('VGuard native globals')
++}
+diff --git a/vlib/v/gen/arm64/asm.v b/vlib/v/gen/arm64/asm.v
+index 4c5b801409..a7df37c865 100644
+--- a/vlib/v/gen/arm64/asm.v
++++ b/vlib/v/gen/arm64/asm.v
+@@ -547,6 +547,11 @@ fn asm_movn(rd Reg, imm16 u32) u32 {
+ 
+ // === PC-Relative Addressing ===
+ 
++// adr rd, #0 (address of this instruction)
++fn asm_adr_here(rd Reg) u32 {
++	return 0x10000000 | u32(rd)
++}
++
+ // adrp rd, #imm21 (load page address - placeholder for reloc)
+ fn asm_adrp(rd Reg) u32 {
+ 	return 0x90000000 | u32(rd)
+diff --git a/vlib/v/gen/arm64/atomic.v b/vlib/v/gen/arm64/atomic.v
+index 54cc8bf39e..7b25e11b61 100644
+--- a/vlib/v/gen/arm64/atomic.v
++++ b/vlib/v/gen/arm64/atomic.v
+@@ -30,6 +30,9 @@ fn (mut g Gen) gen_atomic(val_id int, instr ssa.Instruction) {
+ 		}
+ 		.atomic_load {
+ 			typ := g.m.values[val_id].typ
++			if g.vguard_memory {
++				g.vguard_check_scalar(instr.operands[0], g.m.type_size(typ), false)
++			}
+ 			ptr_reg := g.load_val(instr.operands[0], 9)
+ 			g.emit32(asm_ldar(atomic_old_reg, Reg(ptr_reg), atomic_size_field(g.m.type_size(typ))))
+ 			g.finish_atomic_result(val_id, typ)
+@@ -37,10 +40,13 @@ fn (mut g Gen) gen_atomic(val_id int, instr ssa.Instruction) {
+ 		.atomic_store {
+ 			value_id := instr.operands[0]
+ 			ptr_id := instr.operands[1]
+-			value_reg := g.load_val(value_id, 8)
+-			ptr_reg := g.load_val(ptr_id, 9)
+ 			elem := g.ptr_elem_type(ptr_id)
+ 			typ := if int(elem) > 0 { elem } else { g.m.values[value_id].typ }
++			if g.vguard_memory {
++				g.vguard_check_scalar(ptr_id, g.m.type_size(typ), true)
++			}
++			value_reg := g.load_val(value_id, 8)
++			ptr_reg := g.load_val(ptr_id, 9)
+ 			g.emit32(asm_stlr(Reg(value_reg), Reg(ptr_reg), atomic_size_field(g.m.type_size(typ))))
+ 		}
+ 		.atomic_xchg, .atomic_add, .atomic_sub {
+@@ -56,6 +62,9 @@ fn (mut g Gen) gen_atomic(val_id int, instr ssa.Instruction) {
+ fn (mut g Gen) gen_atomic_read_modify_write(val_id int, instr ssa.Instruction) {
+ 	typ := g.m.values[val_id].typ
+ 	size := atomic_size_field(g.m.type_size(typ))
++	if g.vguard_memory {
++		g.vguard_check_scalar(instr.operands[0], g.m.type_size(typ), true)
++	}
+ 	ptr_reg := Reg(g.load_val(instr.operands[0], 9))
+ 	operand_reg := Reg(g.load_val(instr.operands[1], 8))
+ 	g.emit32(asm_ldaxr(atomic_old_reg, ptr_reg, size))
+@@ -80,6 +89,9 @@ fn (mut g Gen) gen_atomic_compare_exchange(val_id int, instr ssa.Instruction) {
+ 	typ := g.m.values[val_id].typ
+ 	bytes := g.m.type_size(typ)
+ 	size := atomic_size_field(bytes)
++	if g.vguard_memory {
++		g.vguard_check_scalar(instr.operands[0], bytes, true)
++	}
+ 	ptr_reg := Reg(g.load_val(instr.operands[0], 9))
+ 	mut compare_reg := Reg(g.load_val(instr.operands[1], 8))
+ 	desired_reg := Reg(g.load_val(instr.operands[2], 10))
+diff --git a/vlib/v/gen/arm64/elf.v b/vlib/v/gen/arm64/elf.v
+index 04b1ec3fbe..5b61664759 100644
+--- a/vlib/v/gen/arm64/elf.v
++++ b/vlib/v/gen/arm64/elf.v
+@@ -141,6 +141,8 @@ pub fn (mut m MachOObject) write_elf(path string) ! {
+ 	}
+ 
+ 	first_global := local_indices.len + 1
++	// gen_post_pass rebases data symbols on a 16-byte section boundary.
++	data_base := (u64(m.text_data.len) + u64(m.str_data.len) + 15) & ~u64(15)
+ 
+ 	ehdr_size := 64
+ 	shdr_size := 64
+@@ -154,8 +156,8 @@ pub fn (mut m MachOObject) write_elf(path string) ! {
+ 	off_text := off
+ 	off += m.text_data.len
+ 
+-	if off % 8 != 0 {
+-		off += 8 - (off % 8)
++	if off % 16 != 0 {
++		off += 16 - (off % 16)
+ 	}
+ 	off_data := off
+ 	off += m.data_data.len
+@@ -271,7 +273,6 @@ pub fn (mut m MachOObject) write_elf(path string) ! {
+ 		if sym.sect == 2 {
+ 			sym_value -= u64(m.text_data.len)
+ 		} else if sym.sect == 3 {
+-			data_base := (u64(m.text_data.len) + u64(m.str_data.len) + 7) & ~u64(7)
+ 			sym_value -= data_base
+ 		}
+ 		write_u64_le(mut buf, sym_value)
+@@ -304,7 +305,6 @@ pub fn (mut m MachOObject) write_elf(path string) ! {
+ 		if sym.sect == 2 {
+ 			sym_value -= u64(m.text_data.len)
+ 		} else if sym.sect == 3 {
+-			data_base := (u64(m.text_data.len) + u64(m.str_data.len) + 7) & ~u64(7)
+ 			sym_value -= data_base
+ 		}
+ 		write_u64_le(mut buf, sym_value)
+@@ -378,7 +378,7 @@ pub fn (mut m MachOObject) write_elf(path string) ! {
+ 	write_u64_le(mut buf, u64(m.data_data.len))
+ 	write_u32_le(mut buf, 0)
+ 	write_u32_le(mut buf, 0)
+-	write_u64_le(mut buf, 8)
++	write_u64_le(mut buf, 16)
+ 	write_u64_le(mut buf, 0)
+ 	// .rodata
+ 	write_u32_le(mut buf, u32(off_rodata_name))
+diff --git a/vlib/v/gen/arm64/elf_test.v b/vlib/v/gen/arm64/elf_test.v
+index 92d81bc862..875456430b 100644
+--- a/vlib/v/gen/arm64/elf_test.v
++++ b/vlib/v/gen/arm64/elf_test.v
+@@ -46,7 +46,7 @@ fn test_elf_section_relative_symbols_preserve_binding_and_relocation_indices() {
+ 	defer { os.rm(path) or {} }
+ 	mut object := MachOObject.new()
+ 	object.text_data = []u8{len: 16}
+-	object.str_data = []u8{len: 12}
++	object.str_data = []u8{len: 5}
+ 	object.data_data = []u8{len: 16}
+ 	// gen_post_pass has added the Mach-O section bases to these stored addresses.
+ 	global_data := object.add_symbol('_global_data', 40, true, 3)
+@@ -57,6 +57,9 @@ fn test_elf_section_relative_symbols_preserve_binding_and_relocation_indices() {
+ 	object.write_elf(path)!
+ 	data := os.read_bytes(path)!
+ 	section_headers := int(binary.little_endian_u64(data[40..48]))
++	data_header := section_headers + 2 * 64
++	assert binary.little_endian_u64_at(data, data_header + 24) % 16 == 0
++	assert binary.little_endian_u64_at(data, data_header + 48) == 16
+ 	symtab_header := section_headers + 4 * 64
+ 	symtab_offset := int(binary.little_endian_u64(data[symtab_header + 24..symtab_header + 32]))
+ 	assert binary.little_endian_u32(data[symtab_header + 44..symtab_header + 48]) == 3
 diff --git a/vlib/v/gen/arm64/export_abi.v b/vlib/v/gen/arm64/export_abi.v
 index 72251272f3..ac0124032a 100644
 --- a/vlib/v/gen/arm64/export_abi.v
@@ -849,81 +2495,623 @@ index 72251272f3..ac0124032a 100644
  	g.macho.sym_by_name[new_name] = idx
  	if pairs := g.macho.unwind_saved_pairs[old_name] {
 diff --git a/vlib/v/gen/arm64/gen.v b/vlib/v/gen/arm64/gen.v
-index 8c29d0fbcb..7fc3c74b2d 100644
+index 8c29d0fbcb..c7747b456b 100644
 --- a/vlib/v/gen/arm64/gen.v
 +++ b/vlib/v/gen/arm64/gen.v
-@@ -5,6 +5,7 @@ import v.ssa
+@@ -5,22 +5,27 @@ import v.ssa
  // Gen stores state for ARM64 code generation.
  pub struct Gen {
  mut:
-+	vguard_ranges []ssa.EmissionRange
- 	m                   &ssa.Module  = unsafe { nil }
- 	macho               &MachOObject = unsafe { nil }
- 	text_words          []u32
-@@ -678,7 +679,17 @@ fn (mut g Gen) gen_func(func_idx int) {
+-	m                   &ssa.Module  = unsafe { nil }
+-	macho               &MachOObject = unsafe { nil }
+-	text_words          []u32
+-	stack_offsets       []i32
+-	alloca_offsets      []i32
+-	alloca_sizes        []i32
+-	alloca_alignments   []i32
+-	slot_value_indices  []int
+-	slot_value_base     int
+-	slot_value_count    int
+-	stack_size          int
+-	saved_callee_pairs  int
+-	saved_float_pairs   int
+-	current_instr_start int
+-	value_homes         []u8
+-	value_home_ids      []int
++	vguard_ranges        []ssa.EmissionRange
++	vguard_frame_restore int
++	vguard_homes         []ssa.VGuardValueHome
++	vguard_arguments     map[int]ssa.VGuardArgumentEntry
++	vguard_stack_regions map[int]ssa.VGuardStackRegion
++	m                    &ssa.Module  = unsafe { nil }
++	macho                &MachOObject = unsafe { nil }
++	text_words           []u32
++	stack_offsets        []i32
++	alloca_offsets       []i32
++	alloca_sizes         []i32
++	alloca_alignments    []i32
++	slot_value_indices   []int
++	slot_value_base      int
++	slot_value_count     int
++	stack_size           int
++	saved_callee_pairs   int
++	saved_float_pairs    int
++	current_instr_start  int
++	value_homes          []u8
++	value_home_ids       []int
+ 	// Register allocation tables, reused across functions (see regalloc.v).
+ 	ra_interval          []int
+ 	ra_value_block       []int
+@@ -60,7 +65,9 @@ mut:
+ 	// prune_unused emits only the functions reachable from main and exports
+ 	// (freestanding objects register helpers the program may never call).
+ pub mut:
+-	prune_unused bool
++	prune_unused        bool
++	vguard_record_homes bool
++	vguard_memory       bool
+ 	// freestanding links the program's own runtime definitions of libc-named
+ 	// symbols (see Linker.freestanding).
+ 	freestanding bool
+@@ -439,9 +446,21 @@ fn (mut g Gen) gen_pre_pass() {
+ 		}
+ 		data_offset = g.align_global_offset(data_offset, gi)
+ 		g.macho.add_symbol('_' + g.m.globals[gi].name, data_offset, true, 3)
+-		size := g.m.type_size(g.m.globals[gi].typ)
+-		data_offset += u64(if size > 0 { size } else { 8 })
++		data_offset += g.global_storage_size(gi)
+ 	}
++	if g.vguard_memory && g.m.vguard_defined_globals().len > 0 {
++		data_offset = (data_offset + 7) & ~u64(7)
++		g.macho.add_symbol('_' + ssa.vguard_global_table, data_offset, false, 3)
++	}
++}
++
++fn (g &Gen) global_storage_size(index int) u64 {
++	global := g.m.globals[index]
++	if g.vguard_memory {
++		return u64(g.m.vguard_global(global).span)
++	}
++	size := g.m.type_size(global.typ)
++	return u64(if size > 0 { size } else { 8 })
+ }
+ 
+ // gen_post_pass emits post pass output for arm64.
+@@ -464,8 +483,13 @@ fn (mut g Gen) gen_post_pass() {
+ 			continue
+ 		}
+ 		globals_end = g.align_global_offset(globals_end, gi)
+-		size := g.m.type_size(g.m.globals[gi].typ)
+-		globals_end += u64(if size > 0 { size } else { 8 })
++		globals_end += g.global_storage_size(gi)
++	}
++	if g.vguard_memory {
++		count := g.m.vguard_defined_globals().len
++		if count > 0 {
++			globals_end = ((globals_end + 7) & ~u64(7)) + u64(count * ssa.vguard_global_record_size)
++		}
+ 	}
+ 	for g.macho.data_data.len < int(globals_end) {
+ 		g.macho.data_data << 0
+@@ -519,6 +543,9 @@ fn (mut g Gen) gen_func(func_idx int) {
+ 	}
+ 
+ 	g.reset_value_slots(&func)
++	if g.vguard_memory {
++		g.vguard_stack_regions.clear()
++	}
+ 	g.pending_jmps.clear()
+ 
+ 	g.reset_block_offsets(&func)
+@@ -584,8 +611,16 @@ fn (mut g Gen) gen_func(func_idx int) {
+ 					alloc_size
+ 				}
+ 				slot_offset = (slot_offset + 15) & ~0xF
+-				slot_offset += storage_size
+-				g.set_alloca_slot(val_id, -slot_offset, alloc_size, alignment)
++				if g.vguard_memory && alignment <= 16 {
++					size := if elem_size > 0 { elem_size * count } else { 8 }
++					region := ssa.vguard_stack_region(slot_offset, size)
++					g.vguard_stack_regions[val_id] = region
++					g.set_alloca_slot(val_id, region.offset, alloc_size, alignment)
++					slot_offset = -region.offset + region.before
++				} else {
++					slot_offset += storage_size
++					g.set_alloca_slot(val_id, -slot_offset, alloc_size, alignment)
++				}
+ 				slot_offset += 8
+ 			} else if instr.op != .store && instr.op != .ret && instr.op != .br && instr.op != .jmp
+ 				&& instr.op != .unreachable && g.value_home_reg(val_id) == 0 {
+@@ -603,7 +638,9 @@ fn (mut g Gen) gen_func(func_idx int) {
+ 
+ 	// Prologue: stp fp, lr, [sp, -16]! ; mov fp, sp ; sub sp, sp, #frame
+ 	g.emit32(asm_stp_fp_lr_pre())
++	stack_adjusted := g.text_offset() - fn_start
+ 	g.emit32(asm_mov_fp_sp())
++	frame_ready := g.text_offset() - fn_start
+ 	g.emit_frame_allocation(g.stack_size)
+ 	g.emit_save_callee_pairs(g.saved_callee_pairs)
+ 	if g.saved_callee_pairs + g.saved_float_pairs > 0 {
+@@ -627,6 +664,9 @@ fn (mut g Gen) gen_func(func_idx int) {
+ 	mut reg_idx := 0
+ 	mut float_reg_idx := 0
+ 	mut stack_arg_off := 16
++	if g.m.vguard_track_ast {
++		g.vguard_arguments.clear()
++	}
+ 	for _, pid in func.params {
+ 		param_val := g.m.values[pid]
+ 		param_size := g.m.type_size(param_val.typ)
+@@ -636,9 +676,24 @@ fn (mut g Gen) gen_func(func_idx int) {
+ 				// Float arg arrives in dN; move the bit pattern to x8 and spill.
+ 				g.emit32(asm_fmov_x_d(Reg(8), float_reg_idx))
+ 				g.emit_store_fp(8, off)
++				if g.m.vguard_track_ast && g.m.vguard_scalar_width(pid) > 0 {
++					g.vguard_arguments[pid] = ssa.VGuardArgumentEntry{
++						register: 'd${float_reg_idx}'
++						ready: g.text_offset() - fn_start
++						preserve_register: true
++					}
++				}
+ 			} else {
+ 				g.emit_load_fp(8, stack_arg_off)
+ 				g.emit_store_fp(8, off)
++				if g.m.vguard_track_ast && g.m.vguard_scalar_width(pid) > 0 {
++					g.vguard_arguments[pid] = ssa.VGuardArgumentEntry{
++						stack_offset: stack_arg_off - 16
++						ready: g.text_offset() - fn_start
++						stack_adjusted: stack_adjusted
++						frame_ready: frame_ready
++					}
++				}
+ 				stack_arg_off += 8
+ 			}
+ 			float_reg_idx++
+@@ -663,22 +718,107 @@ fn (mut g Gen) gen_func(func_idx int) {
+ 				g.emit_store_fp(reg_idx, off + wi * 8)
+ 				reg_idx++
+ 			}
++			if g.m.vguard_track_ast && g.m.vguard_scalar_width(pid) > 0 {
++				g.vguard_arguments[pid] = ssa.VGuardArgumentEntry{
++					register: 'x${reg_idx - n_words}'
++					ready: g.text_offset() - fn_start
++					preserve_register: func.name != 'main'
++				}
++			}
+ 		} else {
+ 			for wi in 0 .. n_words {
+ 				g.emit_load_fp(8, stack_arg_off + wi * 8)
+ 				g.emit_store_fp(8, off + wi * 8)
+ 			}
++			if g.m.vguard_track_ast && g.m.vguard_scalar_width(pid) > 0 {
++				g.vguard_arguments[pid] = ssa.VGuardArgumentEntry{
++					stack_offset: stack_arg_off - 16
++					ready: g.text_offset() - fn_start
++					stack_adjusted: stack_adjusted
++					frame_ready: frame_ready
++				}
++			}
+ 			stack_arg_off += n_words * 8
+ 		}
+ 	}
++	if g.vguard_record_homes {
++		g.record_vguard_homes(func.name)
++	}
+ 
++	if g.vguard_memory && func.name == 'main' {
++		g.vguard_register_globals()
++	}
++	if g.vguard_stack_regions.len > 0 {
++		g.vguard_poison_frame()
++	}
+ 	// Generate blocks
++	trace_runtime := g.m.vguard_runtime_function(func)
++	if trace_runtime {
++		g.vguard_trace_event(1, func.blocks[0], -1, 0)
++		for param in func.params {
++			if g.m.vguard_scalar_width(param) > 0 {
++				g.vguard_trace_event(4, param, param, g.m.vguard_scalar_width(param))
++			}
++		}
++	}
+ 	for blk_id in func.blocks {
+ 		g.set_block_offset(blk_id, g.text_offset())
  		g.resolve_pending_jmps(blk_id)
  		blk := g.m.blocks[blk_id]
++		if trace_runtime {
++			g.vguard_trace_event(2, blk_id, -1, 0)
++		}
  		for val_id in blk.instrs {
-+
 +			if !g.m.vguard_enabled {
 +				g.gen_instr(val_id)
 +				continue
 +			}
++			mut access_kind := 0
++			if trace_runtime && g.m.values[val_id].kind == .instruction {
++				g.vguard_trace_event(3, val_id, -1, 0)
++				kind, pointer, width := g.m.vguard_memory_operand(val_id)
++				if width > 0 {
++					access_kind = kind
++					g.vguard_trace_event(kind, val_id, pointer, width)
++				}
++			}
 +			start := g.text_offset() - fn_start
  			g.gen_instr(val_id)
-+			end := g.text_offset() - fn_start
++			emitted := g.text_offset()
++			end := emitted - fn_start
++			if trace_runtime && (end > start || (g.m.values[val_id].kind == .instruction
++				&& g.m.instrs[g.m.values[val_id].index].op == .phi)) {
++				if access_kind != 0 {
++					g.vguard_trace_event(7, val_id, -1, 0)
++				}
++				if g.m.values[val_id].kind == .instruction {
++					value := g.m.vguard_result_value(val_id)
++					width := g.m.vguard_scalar_width(value)
++					if width > 0 && g.vguard_has_home(value) {
++						g.vguard_trace_event(4, value, value, width)
++					}
++				}
++			}
 +			if end > start {
-+				g.vguard_ranges << g.m.emission_range(func.name, sym_name, 0, start, end, val_id)
++				mut range := g.m.emission_range(func.name, sym_name, 0, start, end, val_id)
++				if range.op == .ret && g.m.vguard_track_ast {
++					range.recovery_prefix = g.vguard_frame_restore - fn_start - start
++					if g.cur_func_sret_offset == 0 {
++						float_register := if g.is_f32_type(g.cur_func_ret_type) {
++							's0'
++						} else {
++							'd0'
++						}
++						range.return_home = g.m.vguard_return_home(val_id, g.cur_func_ret_type,
++							'x0', float_register)
++					}
++				}
++				if g.m.vguard_track_ast && range.op == .br {
++					// Phi copies are emitted in the successor stubs.
++					range.control_homes = ssa.VGuardControlHomes{ prefix_through: end - start }
++				}
++				g.vguard_ranges << range
 +			}
  		}
  	}
  
-@@ -3216,3 +3227,9 @@ fn parse_arm64_int(s string) i64 {
+@@ -1016,9 +1156,16 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 
+ 			src_val := g.m.values[src_id]
+ 			if src_val.kind == .string_literal {
++				dest_type := g.ptr_elem_type(ptr_id)
++				if g.vguard_memory {
++					if g.is_string_struct_type(dest_type) {
++						g.vguard_check_access(ptr_id, 16, true)
++					} else {
++						g.vguard_check_scalar(ptr_id, g.m.type_size(dest_type), true)
++					}
++				}
+ 				g.materialize_string(src_id, 8)
+ 				ptr_reg := g.load_val(ptr_id, 9)
+-				dest_type := g.ptr_elem_type(ptr_id)
+ 				if g.is_string_struct_type(dest_type) {
+ 					g.emit32(asm_str(Reg(8), Reg(ptr_reg)))
+ 					g.emit32(asm_str_imm(Reg(10), Reg(ptr_reg), 1))
+@@ -1026,13 +1173,31 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 					g.emit_store_typed(8, ptr_reg, dest_type)
+ 				}
+ 			} else {
+-				ptr_reg := g.load_val(ptr_id, 9)
+ 				dest_type := g.ptr_elem_type(ptr_id)
++				src_size := g.m.type_size(src_val.typ)
+ 				if g.is_zero_const(src_id) && g.is_aggregate_type(dest_type) {
+-					g.emit_zero_aggregate(ptr_reg, dest_type, g.aggregate_store_size(ptr_id, dest_type))
++					size := g.aggregate_store_size(ptr_id, dest_type)
++					if g.vguard_memory {
++						g.vguard_check_access(ptr_id, size, true)
++					}
++					ptr_reg := g.load_val(ptr_id, 9)
++					g.emit_zero_aggregate(ptr_reg, dest_type, size)
+ 					return
+ 				}
+-				src_size := g.m.type_size(src_val.typ)
++				if g.vguard_memory {
++					if src_size > 8 && g.is_value_aggregate_type(src_val.typ) {
++						size := if _ := g.stack_slot(src_id) {
++							g.aggregate_store_size(ptr_id, src_val.typ)
++						} else {
++							8
++						}
++						g.vguard_check_access(ptr_id, size, true)
++					} else {
++						typ := if dest_type > 0 { dest_type } else { src_val.typ }
++						g.vguard_check_scalar(ptr_id, g.m.type_size(typ), true)
++					}
++				}
++				ptr_reg := g.load_val(ptr_id, 9)
+ 				if src_size > 8 && g.is_value_aggregate_type(src_val.typ) {
+ 					if src_off := g.stack_slot(src_id) {
+ 						copy_size := g.aggregate_store_size(ptr_id, src_val.typ)
+@@ -1072,8 +1237,20 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 					g.emit_store_fp(10, off + 8)
+ 				}
+ 			} else {
+-				ptr_reg := g.load_val(ptr_id, 9)
+ 				result_size := g.m.type_size(val.typ)
++				if g.vguard_memory {
++					if result_size > 8 && g.is_value_aggregate_type(val.typ) {
++						if _ := g.stack_slot(val_id) {
++							copy_size := g.aggregate_load_size(ptr_id, val.typ)
++							g.vguard_check_access(ptr_id, ((copy_size + 7) / 8) * 8, false)
++						} else {
++							g.vguard_check_scalar(ptr_id, result_size, false)
++						}
++					} else {
++						g.vguard_check_scalar(ptr_id, result_size, false)
++					}
++				}
++				ptr_reg := g.load_val(ptr_id, 9)
+ 				if result_size > 8 && g.is_value_aggregate_type(val.typ) {
+ 					if val.typ > 0 && val.typ < g.m.type_store.types.len {
+ 						if off := g.stack_slot(val_id) {
+@@ -1389,6 +1566,9 @@ fn (mut g Gen) gen_instr(val_id int) {
+ 			g.gen_call(val_id, instr)
+ 		}
+ 		.ret {
++			if g.vguard_stack_regions.len > 0 {
++				g.vguard_unpoison_frame()
++			}
+ 			if g.cur_func_sret_offset != 0 {
+ 				ret_size := g.m.type_size(g.cur_func_ret_type)
+ 				n_words := (ret_size + 7) / 8
+@@ -3216,3 +3396,8 @@ fn parse_arm64_int(s string) i64 {
  	wrapped := i64(n)
  	return if neg { -wrapped } else { wrapped }
  }
 +
-+
 +// vguard_emission_ranges returns instruction ranges recorded for VGuard.
 +pub fn (g &Gen) vguard_emission_ranges() []ssa.EmissionRange {
-+    return g.vguard_ranges
++	return g.vguard_ranges
 +}
 diff --git a/vlib/v/gen/arm64/gen_parallel.c.v b/vlib/v/gen/arm64/gen_parallel.c.v
-index ffa43eff87..fb77797a34 100644
+index ffa43eff87..167e6a0f97 100644
 --- a/vlib/v/gen/arm64/gen_parallel.c.v
 +++ b/vlib/v/gen/arm64/gen_parallel.c.v
-@@ -39,6 +39,7 @@ struct Arm64GenChunk {
+@@ -39,6 +39,8 @@ struct Arm64GenChunk {
  	text_words []u32
  	macho      &MachOObject = unsafe { nil }
  	strings    []string
 +	vguard_ranges []ssa.EmissionRange
++	vguard_homes []ssa.VGuardValueHome
  }
  
  struct Arm64GenBatch {
-@@ -204,6 +205,7 @@ fn arm64_gen_worker(arg voidptr) voidptr {
+@@ -186,6 +188,8 @@ fn arm64_gen_worker(arg voidptr) voidptr {
+ 	mut g := Gen.new(batch.parent.m)
+ 	g.freestanding = batch.parent.freestanding
+ 	g.gc_runtime = batch.parent.gc_runtime
++	g.vguard_record_homes = batch.parent.vguard_record_homes
++	g.vguard_memory = batch.parent.vguard_memory
+ 	unsafe {
+ 		g.global_index = batch.parent.global_index
+ 	}
+@@ -204,6 +208,8 @@ fn arm64_gen_worker(arg voidptr) voidptr {
  			text_words: g.text_words
  			macho:      g.macho
  			strings:    g.chunk_strings
 +			vguard_ranges: g.vguard_ranges
++			vguard_homes:  g.vguard_homes
  		}
  	}
  	g.free_tables()
-@@ -216,6 +218,7 @@ fn (mut g Gen) begin_gen_chunk(text_capacity int) {
+@@ -216,6 +222,8 @@ fn (mut g Gen) begin_gen_chunk(text_capacity int) {
  	g.fn_offsets = map[string]int{}
  	g.string_cache = map[string]int{}
  	g.chunk_strings = []string{}
 +	g.vguard_ranges = []ssa.EmissionRange{}
++	g.vguard_homes = []ssa.VGuardValueHome{}
  }
  
  fn (mut g Gen) reserve_merged_output(chunks []Arm64GenChunk) {
-@@ -257,4 +260,7 @@ fn (mut g Gen) merge_gen_chunk(chunk Arm64GenChunk) {
+@@ -257,4 +265,10 @@ fn (mut g Gen) merge_gen_chunk(chunk Arm64GenChunk) {
  			relocation.pcrel)
  	}
  	g.text_words << chunk.text_words
 +	if g.m.vguard_enabled {
 +		g.vguard_ranges << chunk.vguard_ranges
 +	}
++	if g.vguard_record_homes {
++		g.vguard_homes << chunk.vguard_homes
++	}
  }
+diff --git a/vlib/v/gen/arm64/regalloc.v b/vlib/v/gen/arm64/regalloc.v
+index 003ce2a56f..7b5e104b8a 100644
+--- a/vlib/v/gen/arm64/regalloc.v
++++ b/vlib/v/gen/arm64/regalloc.v
+@@ -617,6 +617,9 @@ fn (mut g Gen) emit_restore_callee_pairs(pairs int) {
+ 
+ // emit_function_return is the epilogue of every return path.
+ fn (mut g Gen) emit_function_return() {
++	if g.m.vguard_track_ast {
++		g.vguard_frame_restore = g.text_offset()
++	}
+ 	g.emit_restore_callee_pairs(g.saved_callee_pairs)
+ 	if g.stack_size > 0 {
+ 		g.emit_add_sp(g.stack_size)
+diff --git a/vlib/v/gen/arm64/vguard.v b/vlib/v/gen/arm64/vguard.v
+new file mode 100644
+index 0000000000..77c63c2274
+--- /dev/null
++++ b/vlib/v/gen/arm64/vguard.v
+@@ -0,0 +1,47 @@
++module arm64
++
++import v.ssa
++
++fn (mut g Gen) record_vguard_homes(function string) {
++	for index in g.slot_value_indices {
++		g.vguard_homes << g.vguard_home(function, index, g.vguard_arguments[g.slot_value_base + index])
++	}
++	for index in g.value_home_ids {
++		if g.value_homes[index] != 0 && g.stack_offsets[index] == 0 && g.alloca_offsets[index] == 0 {
++			g.vguard_homes << g.vguard_home(function, index, ssa.VGuardArgumentEntry{})
++		}
++	}
++}
++
++fn (g &Gen) vguard_home(function string, index int, argument ssa.VGuardArgumentEntry) ssa.VGuardValueHome {
++	value := g.slot_value_base + index
++	reg := g.value_home_reg(value)
++	region := g.vguard_stack_regions[value]
++	return ssa.VGuardValueHome{
++		function:         function
++		value:            value
++		register:         if reg == 0 {
++			''
++		} else if is_float_home(reg) {
++			'd${float_home_reg(reg)}'
++		} else {
++			'x${reg}'
++		}
++		frame_offset:     int(g.stack_offsets[index])
++		object_offset:    int(g.alloca_offsets[index])
++		object_size:      region.size
++		redzone_before:   region.before
++		redzone_after:    region.after
++		argument_entry:   argument
++		object_alignment: if g.alloca_alignments[index] > 16 {
++			int(g.alloca_alignments[index])
++		} else {
++			0
++		}
++	}
++}
++
++// vguard_value_homes returns the assignments from emitted functions.
++pub fn (g &Gen) vguard_value_homes() []ssa.VGuardValueHome {
++	return g.vguard_homes
++}
+diff --git a/vlib/v/gen/arm64/vguard_memory.v b/vlib/v/gen/arm64/vguard_memory.v
+new file mode 100644
+index 0000000000..3a10eb37df
+--- /dev/null
++++ b/vlib/v/gen/arm64/vguard_memory.v
+@@ -0,0 +1,86 @@
++module arm64
++
++import v.ssa
++
++fn (mut g Gen) vguard_check_scalar(ptr_id int, width int, write bool) {
++	g.vguard_check_access(ptr_id, if width in [1, 2, 4] { width } else { 8 }, write)
++}
++
++fn (mut g Gen) vguard_check_access(ptr_id int, size int, write bool) {
++	if size <= 0 {
++		return
++	}
++	pointer := g.load_val(ptr_id, 0)
++	if pointer != 0 {
++		g.emit32(asm_mov_reg(Reg(0), Reg(pointer)))
++	}
++	g.vguard_shadow_call('__asan_region_is_poisoned', size)
++	skip := g.text_offset()
++	g.emit32(asm_cbz(Reg(0), 0))
++	// Report with the generated frame's PC, frame pointer and stack pointer.
++	g.emit32(asm_mov_reg(Reg(3), Reg(0)))
++	g.emit32(asm_adr_here(Reg(0)))
++	g.emit32(asm_mov_reg(Reg(1), fp))
++	g.emit32(asm_add_imm(Reg(2), sp, 0))
++	g.emit_mov_imm(4, if write { 1 } else { 0 })
++	g.emit_mov_imm(5, i64(size))
++	g.vguard_runtime_call('__asan_report_error')
++	g.text_words[skip / 4] = asm_cbz(Reg(0), i32((g.text_offset() - skip) / 4))
++}
++
++fn (mut g Gen) vguard_poison_frame() {
++	for value in g.vguard_stack_regions.keys().sorted() {
++		region := g.vguard_stack_regions[value]
++		g.emit_lea_fp(0, region.offset - region.before)
++		g.vguard_shadow_call('__asan_poison_memory_region', region.before)
++		g.emit_lea_fp(0, region.offset + region.size)
++		g.vguard_shadow_call('__asan_poison_memory_region', region.after)
++	}
++}
++
++fn (mut g Gen) vguard_unpoison_frame() {
++	g.emit_lea_fp(0, -g.stack_size)
++	g.vguard_shadow_call('__asan_unpoison_memory_region', g.stack_size)
++}
++
++fn (mut g Gen) vguard_shadow_call(name string, size int) {
++	g.emit_mov_imm(1, i64(size))
++	g.vguard_runtime_call(name)
++}
++
++fn (mut g Gen) vguard_runtime_call(name string) {
++	symbol := g.macho.add_undefined('_' + name)
++	g.macho.add_reloc(g.text_offset(), symbol, arm64_reloc_branch26, true)
++	g.emit32(asm_bl(0))
++}
++
++fn (mut g Gen) vguard_register_globals() {
++	globals := g.m.vguard_defined_globals()
++	if globals.len == 0 {
++		return
++	}
++	g.emit_global_addr(9, ssa.vguard_global_table)
++	for index, global in globals {
++		offset := index * ssa.vguard_global_record_size
++		g.emit_global_addr(8, global.name)
++		g.emit_store_reg_offset(Reg(8), Reg(9), offset)
++		g.emit_mov_imm(8, i64(global.size))
++		g.emit_store_reg_offset(Reg(8), Reg(9), offset + 8)
++		g.emit_mov_imm(8, i64(global.span))
++		g.emit_store_reg_offset(Reg(8), Reg(9), offset + 16)
++		g.vguard_string_address(8, global.name)
++		g.emit_store_reg_offset(Reg(8), Reg(9), offset + 24)
++		g.vguard_string_address(8, 'VGuard native globals')
++		g.emit_store_reg_offset(Reg(8), Reg(9), offset + 32)
++	}
++	g.emit32(asm_mov_reg(Reg(0), Reg(9)))
++	g.vguard_shadow_call('__asan_register_globals', globals.len)
++}
++
++fn (mut g Gen) vguard_string_address(reg int, name string) {
++	symbol := g.string_symbol(name)
++	g.macho.add_reloc(g.text_offset(), symbol, arm64_reloc_page21, true)
++	g.emit32(asm_adrp(Reg(reg)))
++	g.macho.add_reloc(g.text_offset(), symbol, arm64_reloc_pageoff12, false)
++	g.emit32(asm_add_pageoff(Reg(reg)))
++}
+diff --git a/vlib/v/gen/arm64/vguard_runtime.v b/vlib/v/gen/arm64/vguard_runtime.v
+new file mode 100644
+index 0000000000..14564da540
+--- /dev/null
++++ b/vlib/v/gen/arm64/vguard_runtime.v
+@@ -0,0 +1,27 @@
++module arm64
++
++fn (g &Gen) vguard_has_home(value int) bool {
++	if g.value_home_reg(value) != 0 {
++		return true
++	}
++	if _ := g.stack_slot(value) {
++		return true
++	}
++	return false
++}
++
++fn (mut g Gen) vguard_trace_event(kind int, id int, value int, width int) {
++	if value >= 0 {
++		reg := g.load_val(value, 3)
++		if reg != 3 {
++			g.emit32(asm_mov_reg(Reg(3), Reg(reg)))
++		}
++	} else {
++		g.emit_mov_imm(3, 0)
++	}
++	g.emit_mov_imm(0, i64(kind))
++	g.emit_mov_imm(1, i64(id))
++	g.emit32(asm_mov_reg(Reg(2), fp))
++	g.emit_mov_imm(4, i64(width))
++	g.vguard_runtime_call('vguard_ssa_event')
++}
 diff --git a/vlib/v/gen/fastc/fastc.v b/vlib/v/gen/fastc/fastc.v
 index 3fc7e41847..c146ee3f66 100644
 --- a/vlib/v/gen/fastc/fastc.v
@@ -994,19 +3182,104 @@ index 96705ae4f7..87a5b7fd2e 100644
 +		g.out.writeln('#line ${line} ${fastc_c_string_value(file.name)}')
 +	}
 +}
+diff --git a/vlib/v/gen/wasm/encode.v b/vlib/v/gen/wasm/encode.v
+index dd8e39d9f3..15bf3e3499 100644
+--- a/vlib/v/gen/wasm/encode.v
++++ b/vlib/v/gen/wasm/encode.v
+@@ -58,16 +58,17 @@ struct Global {
+ @[heap]
+ pub struct Module {
+ mut:
+-	types    []FuncType
+-	imports  []ImportFunc
+-	funcs    []Func
+-	exports  []Export
+-	datas    []DataSeg
+-	globals  []Global
+-	mem_min  int = 2
+-	n_import int
+-	start    int = -1
+-	table    []int
++	types         []FuncType
++	imports       []ImportFunc
++	funcs         []Func
++	exports       []Export
++	datas         []DataSeg
++	globals       []Global
++	mem_min       int = 2
++	vguard_shadow bool
++	n_import      int
++	start         int = -1
++	table         []int
+ }
+ 
+ pub fn Module.new() &Module {
+@@ -272,9 +273,13 @@ pub fn (m &Module) compile() []u8 {
+ 
+ 	// memory section (5)
+ 	mut msec := []u8{}
+-	leb_u(mut msec, 1) // one memory
++	leb_u(mut msec, if m.vguard_shadow { 2 } else { 1 })
+ 	msec << 0x00 // limits: min only
+ 	leb_u(mut msec, u64(m.mem_min))
++	if m.vguard_shadow {
++		msec << 0x00
++		leb_u(mut msec, 1)
++	}
+ 	section(mut out, 0x05, msec)
+ 
+ 	// global section (6)
 diff --git a/vlib/v/gen/wasm/ssa_gen.v b/vlib/v/gen/wasm/ssa_gen.v
-index 97e3816419..fc120d960a 100644
+index 97e3816419..56d061da86 100644
 --- a/vlib/v/gen/wasm/ssa_gen.v
 +++ b/vlib/v/gen/wasm/ssa_gen.v
-@@ -10,6 +10,7 @@ import v.ssa
+@@ -10,6 +10,9 @@ import v.ssa
  @[heap]
  pub struct SSAGen {
  mut:
 +	vguard_ranges []ssa.EmissionRange
++	vguard_heap_enabled bool
++	vguard_heap VGuardHeap
  	m           &ssa.Module = unsafe { nil }
  	mod         &Module     = unsafe { nil }
  	configured  bool
-@@ -492,7 +493,17 @@ fn (mut g SSAGen) emit_function(fid int) ! {
+@@ -50,6 +53,11 @@ pub fn SSAGen.new(m &ssa.Module) &SSAGen {
+ 	return &SSAGen{ m: m, mod: Module.new() }
+ }
+ 
++// enable_vguard_heap emits allocation metadata and memory checks in a private memory.
++pub fn (mut g SSAGen) enable_vguard_heap() {
++	g.vguard_heap_enabled = true
++}
++
+ // configure supplies entry points and export names collected by the frontend.
+ pub fn (mut g SSAGen) configure(exports map[string]string, init_fns []string, main_fn string) {
+ 	g.configured = true
+@@ -104,7 +112,6 @@ pub fn (mut g SSAGen) gen() ! {
+ 			}
+ 		}
+ 	}
+-	mut helper_count := 1
+ 	mut fd_write := -1
+ 	if uses_write {
+ 		write_type := g.mod.add_type([valtype_i32, valtype_i32, valtype_i32, valtype_i32], [valtype_i32])
+@@ -124,10 +131,13 @@ pub fn (mut g SSAGen) gen() ! {
+ 		g.write_index = g.mod.reserve_func_index(0)
+ 		mut runtime := &Gen{ mod: g.mod }
+ 		runtime.emit_write_helper(fd_write)
+-		helper_count++
+ 	}
+-	g.alloc_index = g.mod.reserve_func_index(helper_count - 1)
++	if g.vguard_heap_enabled {
++		g.init_vguard_heap(stack_top)
++	}
++	g.alloc_index = g.mod.reserve_func_index(g.mod.funcs.len)
+ 	g.emit_allocator()
++	helper_count := g.mod.funcs.len
+ 	mut table := []int{}
+ 	for i, fid in functions {
+ 		f := g.m.funcs[fid]
+@@ -492,7 +502,17 @@ fn (mut g SSAGen) emit_function(fid int) ! {
  		g.cur.raw(0x46)
  		g.cur.if_void()
  		for vid in g.m.blocks[bid].instrs {
@@ -1024,7 +3297,192 @@ index 97e3816419..fc120d960a 100644
  		}
  		g.cur.raw(0x00) // A block must end in an SSA terminator.
  		g.cur.end()
-@@ -1296,3 +1307,9 @@ fn ssa_wasm_compare(op ssa.OpCode, w WType) u8 {
+@@ -584,6 +604,17 @@ fn (mut g SSAGen) result(id int) {
+ }
+ 
+ fn (mut g SSAGen) memory_copy() {
++	if g.vguard_heap_enabled {
++		size, source, dest := g.temp(.i32), g.temp(.i32), g.temp(.i32)
++		g.cur.local_set(size)
++		g.cur.local_set(source)
++		g.cur.local_set(dest)
++		g.check_shadow_locals(source, size)
++		g.check_shadow_locals(dest, size)
++		g.cur.local_get(dest)
++		g.cur.local_get(source)
++		g.cur.local_get(size)
++	}
+ 	g.cur.raw(0xfc)
+ 	g.cur.raw(0x0a)
+ 	g.cur.raw(0x00)
+@@ -591,6 +622,16 @@ fn (mut g SSAGen) memory_copy() {
+ }
+ 
+ fn (mut g SSAGen) memory_fill() {
++	if g.vguard_heap_enabled {
++		size, value, dest := g.temp(.i32), g.temp(.i32), g.temp(.i32)
++		g.cur.local_set(size)
++		g.cur.local_set(value)
++		g.cur.local_set(dest)
++		g.check_shadow_locals(dest, size)
++		g.cur.local_get(dest)
++		g.cur.local_get(value)
++		g.cur.local_get(size)
++	}
+ 	g.cur.raw(0xfc)
+ 	g.cur.raw(0x0b)
+ 	g.cur.raw(0x00)
+@@ -658,6 +699,9 @@ fn (mut g SSAGen) edge(from int, to int, depth int) ! {
+ fn (mut g SSAGen) load_scalar(typ ssa.TypeID, offset int) {
+ 	t := g.m.type_store.types[typ]
+ 	if t.kind in [.ptr_t, .func_t] && g.m.target.ptr_size == 8 {
++		if g.vguard_heap_enabled {
++			g.check_shadow_address(offset, 8)
++		}
+ 		g.cur.load(0x29, 0, offset)
+ 		g.cur.raw(0xa7)
+ 		return
+@@ -676,12 +720,18 @@ fn (mut g SSAGen) load_scalar(typ ssa.TypeID, offset int) {
+ 			}
+ 		}
+ 	}
++	if g.vguard_heap_enabled {
++		g.check_shadow_address(offset, vguard_memory_width(op))
++	}
+ 	g.cur.load(op, 0, offset)
+ }
+ 
+ fn (mut g SSAGen) store_scalar(typ ssa.TypeID, offset int) {
+ 	t := g.m.type_store.types[typ]
+ 	if t.kind in [.ptr_t, .func_t] && g.m.target.ptr_size == 8 {
++		if g.vguard_heap_enabled {
++			g.check_shadow_store(.i32, offset, 8)
++		}
+ 		g.cur.raw(0xad)
+ 		g.cur.store(0x37, 0, offset)
+ 		return
+@@ -700,6 +750,9 @@ fn (mut g SSAGen) store_scalar(typ ssa.TypeID, offset int) {
+ 			}
+ 		}
+ 	}
++	if g.vguard_heap_enabled {
++		g.check_shadow_store(g.wtype(typ), offset, vguard_memory_width(op))
++	}
+ 	g.cur.store(op, 0, offset)
+ }
+ 
+@@ -1040,6 +1093,11 @@ fn (mut g SSAGen) emit_intrinsic(id int, instr ssa.Instruction, name string) ! {
+ 	ops := instr.operands
+ 	match name {
+ 		'write' {
++			if g.vguard_heap_enabled {
++				g.intrinsic_arg(ops[2])!
++				g.intrinsic_arg(ops[3])!
++				g.cur.call(g.vguard_heap.check)
++			}
+ 			g.intrinsic_arg(ops[2])!
+ 			g.intrinsic_arg(ops[3])!
+ 			g.intrinsic_arg(ops[1])!
+@@ -1052,13 +1110,34 @@ fn (mut g SSAGen) emit_intrinsic(id int, instr ssa.Instruction, name string) ! {
+ 		'malloc', 'calloc' {
+ 			g.intrinsic_arg(ops[1])!
+ 			if name == 'calloc' {
+-				g.intrinsic_arg(ops[2])!
+-				g.cur.raw(0x6c)
++				if g.vguard_heap_enabled {
++					product := g.temp(.i64)
++					g.cur.raw(0xad)
++					g.intrinsic_arg(ops[2])!
++					g.cur.raw(0xad)
++					g.cur.raw(0x7e) // i64.mul
++					g.cur.local_tee(product)
++					g.cur.i64_const(0xffffffff)
++					g.cur.raw(0x56)
++					g.cur.if_void()
++					g.cur.call(g.vguard_heap.capacity)
++					g.cur.end()
++					g.cur.local_get(product)
++					g.cur.raw(0xa7)
++				} else {
++					g.intrinsic_arg(ops[2])!
++					g.cur.raw(0x6c)
++				}
+ 			}
+ 			g.cur.call(g.alloc_index)
+ 			g.result(id)
+ 		}
+-		'free' {}
++		'free' {
++			if g.vguard_heap_enabled {
++				g.intrinsic_arg(ops[1])!
++				g.cur.call(g.vguard_heap.release)
++			}
++		}
+ 		'memcpy', 'memmove' {
+ 			g.intrinsic_arg(ops[1])!
+ 			g.intrinsic_arg(ops[2])!
+@@ -1092,6 +1171,15 @@ fn (mut g SSAGen) emit_intrinsic(id int, instr ssa.Instruction, name string) ! {
+ 			g.cur.local_set(ptr_l)
+ 			g.intrinsic_arg(ops[2])!
+ 			g.cur.local_set(size_l)
++			old_size := if g.vguard_heap_enabled { g.temp(.i32) } else { -1 }
++			if g.vguard_heap_enabled {
++				g.cur.local_get(ptr_l)
++				g.cur.if_void()
++				g.cur.local_get(ptr_l)
++				g.cur.call(g.vguard_heap.live_size)
++				g.cur.local_set(old_size)
++				g.cur.end()
++			}
+ 			g.cur.local_get(size_l)
+ 			g.cur.call(g.alloc_index)
+ 			g.cur.local_set(new_l)
+@@ -1099,8 +1187,21 @@ fn (mut g SSAGen) emit_intrinsic(id int, instr ssa.Instruction, name string) ! {
+ 			g.cur.if_void()
+ 			g.cur.local_get(new_l)
+ 			g.cur.local_get(ptr_l)
+-			g.cur.local_get(size_l)
++			if g.vguard_heap_enabled {
++				g.cur.local_get(old_size)
++				g.cur.local_get(size_l)
++				g.cur.local_get(old_size)
++				g.cur.local_get(size_l)
++				g.cur.raw(0x49) // min(old size, new size)
++				g.cur.raw(0x1b)
++			} else {
++				g.cur.local_get(size_l)
++			}
+ 			g.memory_copy()
++			if g.vguard_heap_enabled {
++				g.cur.local_get(ptr_l)
++				g.cur.call(g.vguard_heap.release)
++			}
+ 			g.cur.end()
+ 			g.cur.local_get(new_l)
+ 			g.result(id)
+@@ -1124,6 +1225,10 @@ fn (mut g SSAGen) emit_intrinsic(id int, instr ssa.Instruction, name string) ! {
+ 			g.cur.local_set(b_l)
+ 			g.intrinsic_arg(ops[3])!
+ 			g.cur.local_set(n_l)
++			if g.vguard_heap_enabled {
++				g.check_shadow_locals(a_l, n_l)
++				g.check_shadow_locals(b_l, n_l)
++			}
+ 			g.cur.i32_const(0)
+ 			g.cur.local_set(i_l)
+ 			g.cur.i32_const(0)
+@@ -1199,6 +1304,10 @@ fn (mut g SSAGen) emit_intrinsic(id int, instr ssa.Instruction, name string) ! {
+ }
+ 
+ fn (mut g SSAGen) emit_allocator() {
++	if g.vguard_heap_enabled {
++		g.emit_guarded_allocator()
++		return
++	}
+ 	mut c := Code{}
+ 	// malloc(size): align the bump pointer, grow memory, and zero the allocation.
+ 	c.global_get(g.heap_global)
+@@ -1296,3 +1405,9 @@ fn ssa_wasm_compare(op ssa.OpCode, w WType) u8 {
  	}
  	return cmp_op(flat_op, w, op !in [.ult, .ugt, .ule, .uge])
  }
@@ -1034,20 +3492,420 @@ index 97e3816419..fc120d960a 100644
 +pub fn (g &SSAGen) vguard_emission_ranges() []ssa.EmissionRange {
 +    return g.vguard_ranges
 +}
+diff --git a/vlib/v/gen/wasm/vguard_heap.v b/vlib/v/gen/wasm/vguard_heap.v
+new file mode 100644
+index 0000000000..bdcc55e113
+--- /dev/null
++++ b/vlib/v/gen/wasm/vguard_heap.v
+@@ -0,0 +1,366 @@
++module wasm
++
++import v.ssa
++
++const vguard_shadow_memory = 1
++
++struct VGuardHeap {
++mut:
++	floor     int
++	index     int
++	register  int
++	check     int
++	live_size int
++	release   int
++	bounds    int
++	retired   int
++	bad_free  int
++	capacity  int
++}
++
++// A granule records the allocation base. The base record's second word is
++// the size plus one, or zero after release. Metadata is in unexported memory.
++fn (mut c Code) vguard_shadow_word(op u8, offset int) {
++	c.raw(op)
++	leb_u(mut c.bytes, 0x42) // four-byte alignment with an explicit memory index
++	leb_u(mut c.bytes, vguard_shadow_memory)
++	leb_u(mut c.bytes, u64(offset))
++}
++
++fn (mut g SSAGen) vguard_heap_trap(kind string) int {
++	mut c := Code{}
++	c.raw(0x00) // unreachable
++	c.end()
++	body := g.mod.funcs.len
++	idx := g.mod.add_func(g.mod.add_type([], []), [], c.bytes)
++	g.vguard_ranges << ssa.EmissionRange{
++		function: '__vguard_heap_' + kind
++		body:     body
++		start:    0
++		end:      1
++		value:    -1
++		op:       .unreachable
++	}
++	return idx
++}
++
++fn (mut g SSAGen) init_vguard_heap(floor int) {
++	g.mod.vguard_shadow = true
++	g.vguard_heap.floor = floor
++	g.vguard_heap.bounds = g.vguard_heap_trap('bounds')
++	g.vguard_heap.retired = g.vguard_heap_trap('retired')
++	g.vguard_heap.bad_free = g.vguard_heap_trap('invalid_lifetime')
++	g.vguard_heap.capacity = g.vguard_heap_trap('capacity')
++	g.vguard_heap.index = g.emit_shadow_index()
++	g.vguard_heap.register = g.emit_shadow_register()
++	g.vguard_heap.check = g.emit_shadow_check()
++	g.vguard_heap.live_size = g.emit_shadow_live_size()
++	g.vguard_heap.release = g.emit_shadow_release()
++}
++
++fn (mut g SSAGen) emit_shadow_index() int {
++	mut c := Code{}
++	c.local_get(0)
++	c.i32_const(g.vguard_heap.floor)
++	c.raw(0x6b) // sub
++	c.i32_const(4)
++	c.raw(0x76) // shr_u
++	c.i32_const(3)
++	c.raw(0x74) // shl
++	c.end()
++	return g.mod.add_func(g.mod.add_type([valtype_i32], [valtype_i32]), [], c.bytes)
++}
++
++fn (mut g SSAGen) emit_shadow_register() int {
++	mut c := Code{}
++	// Parameters are the base, logical size and aligned one-past-end address.
++	start, end, cursor, pages, current := 3, 4, 5, 6, 7
++	c.local_get(0)
++	c.call(g.vguard_heap.index)
++	c.local_set(start)
++	c.local_get(2)
++	c.call(g.vguard_heap.index)
++	c.local_tee(end)
++	c.i32_const(65535)
++	c.raw(0x6a)
++	c.i32_const(16)
++	c.raw(0x76)
++	c.local_tee(pages)
++	c.raw(0x3f) // memory.size
++	c.raw(vguard_shadow_memory)
++	c.local_tee(current)
++	c.raw(0x4b) // gt_u
++	c.if_void()
++	c.local_get(pages)
++	c.local_get(current)
++	c.raw(0x6b)
++	c.raw(0x40) // memory.grow
++	c.raw(vguard_shadow_memory)
++	c.i32_const(-1)
++	c.raw(0x46)
++	c.if_void()
++	c.call(g.vguard_heap.capacity)
++	c.end()
++	c.end()
++	c.local_get(start)
++	c.local_set(cursor)
++	c.block_void()
++	c.loop_void()
++	c.local_get(cursor)
++	c.local_get(end)
++	c.raw(0x4f) // ge_u
++	c.br_if(1)
++	c.local_get(cursor)
++	c.local_get(0)
++	c.vguard_shadow_word(0x36, 0)
++	c.local_get(cursor)
++	c.i32_const(8)
++	c.raw(0x6a)
++	c.local_set(cursor)
++	c.br(0)
++	c.end()
++	c.end()
++	c.local_get(start)
++	c.local_get(1)
++	c.i32_const(1)
++	c.raw(0x6a)
++	c.vguard_shadow_word(0x36, 4)
++	c.end()
++	return g.mod.add_func(g.mod.add_type([valtype_i32, valtype_i32, valtype_i32], []),
++		[valtype_i32, valtype_i32, valtype_i32, valtype_i32, valtype_i32], c.bytes)
++}
++
++fn (mut g SSAGen) emit_shadow_check() int {
++	mut c := Code{}
++	// Check a complete span against the allocation containing its first byte.
++	base, size, delta := 2, 3, 4
++	c.local_get(1)
++	c.raw(0x45)
++	c.if_void()
++	c.ret()
++	c.end()
++	c.local_get(0)
++	c.i32_const(g.vguard_heap.floor)
++	c.raw(0x49) // lt_u
++	c.if_void()
++	// Below the heap only the existing linear-memory check applies.
++	c.local_get(1)
++	c.i32_const(g.vguard_heap.floor)
++	c.local_get(0)
++	c.raw(0x6b)
++	c.raw(0x4b)
++	c.if_void()
++	c.call(g.vguard_heap.bounds)
++	c.end()
++	c.ret()
++	c.end()
++	c.local_get(0)
++	c.global_get(g.heap_global)
++	c.raw(0x4f)
++	c.if_void()
++	c.call(g.vguard_heap.bounds)
++	c.end()
++	c.local_get(0)
++	c.call(g.vguard_heap.index)
++	c.vguard_shadow_word(0x28, 0)
++	c.local_tee(base)
++	c.raw(0x45)
++	c.if_void()
++	c.call(g.vguard_heap.bounds)
++	c.end()
++	c.local_get(base)
++	c.call(g.vguard_heap.index)
++	c.vguard_shadow_word(0x28, 4)
++	c.local_tee(size)
++	c.raw(0x45)
++	c.if_void()
++	c.call(g.vguard_heap.retired)
++	c.end()
++	c.local_get(size)
++	c.i32_const(1)
++	c.raw(0x6b)
++	c.local_set(size)
++	c.local_get(0)
++	c.local_get(base)
++	c.raw(0x6b)
++	c.local_tee(delta)
++	c.local_get(size)
++	c.raw(0x4b)
++	c.if_void()
++	c.call(g.vguard_heap.bounds)
++	c.end()
++	c.local_get(1)
++	c.local_get(size)
++	c.local_get(delta)
++	c.raw(0x6b)
++	c.raw(0x4b)
++	c.if_void()
++	c.call(g.vguard_heap.bounds)
++	c.end()
++	c.end()
++	return g.mod.add_func(g.mod.add_type([valtype_i32, valtype_i32], []),
++		[valtype_i32, valtype_i32, valtype_i32], c.bytes)
++}
++
++fn (mut g SSAGen) emit_shadow_live_size() int {
++	mut c := Code{}
++	c.local_get(0)
++	c.i32_const(g.vguard_heap.floor)
++	c.raw(0x49)
++	c.local_get(0)
++	c.global_get(g.heap_global)
++	c.raw(0x4f)
++	c.raw(0x72) // or
++	c.if_void()
++	c.call(g.vguard_heap.bad_free)
++	c.end()
++	c.local_get(0)
++	c.call(g.vguard_heap.index)
++	c.local_tee(1)
++	c.vguard_shadow_word(0x28, 0)
++	c.local_get(0)
++	c.raw(0x47)
++	c.local_get(0)
++	c.i32_const(15)
++	c.raw(0x71)
++	c.raw(0x72)
++	c.if_void()
++	c.call(g.vguard_heap.bad_free)
++	c.end()
++	c.local_get(1)
++	c.vguard_shadow_word(0x28, 4)
++	c.local_tee(1)
++	c.raw(0x45)
++	c.if_void()
++	c.call(g.vguard_heap.bad_free)
++	c.end()
++	c.local_get(1)
++	c.i32_const(1)
++	c.raw(0x6b)
++	c.end()
++	return g.mod.add_func(g.mod.add_type([valtype_i32], [valtype_i32]), [valtype_i32], c.bytes)
++}
++
++fn (mut g SSAGen) emit_shadow_release() int {
++	mut c := Code{}
++	c.local_get(0)
++	c.if_void()
++	c.local_get(0)
++	c.call(g.vguard_heap.live_size)
++	c.drop()
++	c.local_get(0)
++	c.call(g.vguard_heap.index)
++	c.i32_const(0)
++	c.vguard_shadow_word(0x36, 4)
++	c.end()
++	c.end()
++	return g.mod.add_func(g.mod.add_type([valtype_i32], []), [], c.bytes)
++}
++
++fn vguard_memory_width(op u8) int {
++	return match op {
++		0x2c, 0x2d, 0x3a { 1 }
++		0x2e, 0x2f, 0x3b { 2 }
++		0x29, 0x2b, 0x37, 0x39 { 8 }
++		else { 4 }
++	}
++}
++
++fn (mut g SSAGen) check_shadow_locals(addr int, size int) {
++	g.cur.local_get(addr)
++	g.cur.local_get(size)
++	g.cur.call(g.vguard_heap.check)
++}
++
++fn (mut g SSAGen) check_shadow_address(offset int, width int) {
++	addr := g.temp(.i32)
++	g.cur.local_tee(addr)
++	g.cur.local_get(addr)
++	if offset != 0 {
++		effective := g.temp(.i32)
++		g.cur.i32_const(offset)
++		g.cur.raw(0x6a)
++		g.cur.local_tee(effective)
++		g.cur.local_get(addr)
++		g.cur.raw(0x49)
++		g.cur.if_void()
++		g.cur.call(g.vguard_heap.bounds)
++		g.cur.end()
++		g.cur.local_get(effective)
++	}
++	g.cur.i32_const(width)
++	g.cur.call(g.vguard_heap.check)
++}
++
++fn (mut g SSAGen) check_shadow_store(typ WType, offset int, width int) {
++	value := g.temp(typ)
++	g.cur.local_set(value)
++	g.check_shadow_address(offset, width)
++	g.cur.local_get(value)
++}
++
++fn (mut g SSAGen) emit_guarded_allocator() {
++	mut c := Code{}
++	base, end, pages, widened := 1, 2, 3, 4
++	c.global_get(g.heap_global)
++	c.local_tee(base)
++	c.raw(0xad) // i64.extend_i32_u
++	c.local_get(0)
++	c.i32_const(1)
++	c.local_get(0)
++	c.raw(0x1b) // Every allocation, including size zero, gets its own aligned address.
++	c.raw(0xad)
++	c.raw(0x7c) // i64.add
++	c.i64_const(15)
++	c.raw(0x7c)
++	c.i64_const(-16)
++	c.raw(0x83) // i64.and
++	c.local_tee(widened)
++	c.i64_const(0xfffffff0)
++	c.raw(0x56) // i64.gt_u
++	c.if_void()
++	c.call(g.vguard_heap.capacity)
++	c.end()
++	c.local_get(widened)
++	c.raw(0xa7)
++	c.local_tee(end)
++	// A ceiling division without an overflowing i32 addition near 4 GiB.
++	c.i32_const(1)
++	c.raw(0x6b)
++	c.i32_const(16)
++	c.raw(0x76)
++	c.i32_const(1)
++	c.raw(0x6a)
++	c.raw(0x3f)
++	c.raw(0x00)
++	c.raw(0x6b)
++	c.local_tee(pages)
++	c.i32_const(0)
++	c.raw(0x4a) // gt_s: a negative difference needs no growth.
++	c.if_void()
++	c.local_get(pages)
++	c.raw(0x40)
++	c.raw(0x00)
++	c.i32_const(-1)
++	c.raw(0x46)
++	c.if_void()
++	c.call(g.vguard_heap.capacity)
++	c.end()
++	c.end()
++	c.local_get(base)
++	c.i32_const(0)
++	c.local_get(0)
++	c.raw(0xfc)
++	c.raw(0x0b)
++	c.raw(0x00)
++	c.local_get(base)
++	c.local_get(0)
++	c.local_get(end)
++	c.call(g.vguard_heap.register)
++	c.local_get(end)
++	c.global_set(g.heap_global)
++	c.local_get(base)
++	c.end()
++	g.mod.add_func(g.mod.add_type([valtype_i32], [valtype_i32]),
++		[valtype_i32, valtype_i32, valtype_i32, valtype_i64], c.bytes)
++}
 diff --git a/vlib/v/parser/parser.v b/vlib/v/parser/parser.v
-index 5b34690044..98440134f0 100644
+index 5b34690044..04984a8537 100644
 --- a/vlib/v/parser/parser.v
 +++ b/vlib/v/parser/parser.v
-@@ -234,6 +234,8 @@ mut:
- 	text_value_cache &flat.TextProbeCache = unsafe { nil }
- 	text_type_cache  &flat.TextProbeCache = unsafe { nil }
+@@ -82,6 +82,17 @@ mut:
+ 	param_paren_depth  int
+ }
+ 
++// VGuardLoop captures source offsets and any proven loop form.
++pub struct VGuardLoop {
++pub:
++	pos          token.Pos
++	body         int
++	end          int
++	proof        string
++	continue_pos token.Pos
++	labeled      bool
++}
++
+ // Parser represents parser data used by parser.
+ pub struct Parser {
+ 	prefs &pref.Preferences
+@@ -231,10 +242,15 @@ mut:
+ 	accepted_line_directives map[int]bool
+ 	// The probe caches that canonicalize the texts of each file of a batch (see
+ 	// intern_parsed_node_texts): nil outside of a batch.
+-	text_value_cache &flat.TextProbeCache = unsafe { nil }
+-	text_type_cache  &flat.TextProbeCache = unsafe { nil }
++	text_value_cache   &flat.TextProbeCache = unsafe { nil }
++	text_type_cache    &flat.TextProbeCache = unsafe { nil }
++	vguard_labeled_for int
  pub mut:
+-	a &flat.FlatAst = unsafe { nil }
 +	vguard_record_entries bool
 +	vguard_entry_offsets  map[int]int
- 	a &flat.FlatAst = unsafe { nil }
++	vguard_record_loops   bool
++	vguard_loops          []VGuardLoop
++	a                     &flat.FlatAst = unsafe { nil }
  	// no_source_digests leaves the SHA-256 of each parsed source out (see
  	// token.File.index_line_starts): the compiler driver sets it for a build
-@@ -2253,6 +2255,9 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
+ 	// that stages no fallback manifest, the only reader of those digests.
+@@ -2253,6 +2269,9 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
  	}
  
  	// body
@@ -1057,7 +3915,7 @@ index 5b34690044..98440134f0 100644
  	mut body_ids := []flat.NodeId{}
  	mut formatter_end := 0
  	prev_fn := p.cur_fn
-@@ -2298,7 +2303,6 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
+@@ -2298,7 +2317,6 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
  		p.skip_block()
  		formatter_end = p.prev_tok_end
  	} else {
@@ -1065,7 +3923,7 @@ index 5b34690044..98440134f0 100644
  		p.check(.lcbr)
  		p.predeclare_local_type_names_in_block(body_start)
  		for p.tok != .rcbr && p.tok != .eof {
-@@ -2340,6 +2344,9 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
+@@ -2340,6 +2358,9 @@ fn (mut p Parser) fn_decl_body(name string, receiver_name string, receiver_type_
  		children_count: flat.child_count(param_ids.len + body_ids.len)
  		flags:          flat.node_flags(false, is_static_type_method)
  	})
@@ -1075,6 +3933,208 @@ index 5b34690044..98440134f0 100644
  	if p.prefs.is_fmt && formatter_end > 0 {
  		p.a.formatter_node_ends[int(id)] = formatter_end
  	}
+@@ -9289,6 +9310,9 @@ fn (mut p Parser) stmt() flat.NodeId {
+ 				if p.tok == .semicolon {
+ 					p.next()
+ 				}
++				if p.vguard_record_loops && p.tok == .key_for {
++					p.vguard_labeled_for = p.tok_pos
++				}
+ 				return p.a.add_node(flat.Node{
+ 					kind:  .label_stmt
+ 					value: label_name
+@@ -9733,8 +9757,8 @@ fn (mut p Parser) for_stmt() flat.NodeId {
+ 		}), for_start)
+ 	}
+ 	if p.tok == .lcbr {
+-		// infinite loop: for { ... }
+-		body_ids := p.parse_block_body()
++		// Infinite loop: for { ... }
++		body_ids := p.parse_vguard_loop_body(for_start, 'unconditional')
+ 		empty1 := p.add(flat.NodeKind.empty)
+ 		empty2 := p.add(flat.NodeKind.empty)
+ 		empty3 := p.add(flat.NodeKind.empty)
+@@ -9785,7 +9809,7 @@ fn (mut p Parser) for_stmt() flat.NodeId {
+ 			return p.record_formatter_for_span(p.for_comma_header(first_expr, true), for_start)
+ 		}
+ 		if p.tok == .lcbr {
+-			body_ids := p.parse_block_body()
++			body_ids := p.parse_vguard_loop_body(for_start, '')
+ 			init_empty := p.add(flat.NodeKind.empty)
+ 			post_empty := p.add(flat.NodeKind.empty)
+ 			mut ids := []flat.NodeId{}
+@@ -9819,7 +9843,7 @@ fn (mut p Parser) for_stmt() flat.NodeId {
+ 		} else {
+ 			p.add(flat.NodeKind.empty)
+ 		}
+-		body_ids := p.parse_block_body()
++		body_ids := p.parse_vguard_loop_body(for_start, '')
+ 		mut ids := []flat.NodeId{}
+ 		ids << p.add(flat.NodeKind.empty)
+ 		ids << cond
+@@ -9870,7 +9894,7 @@ fn (mut p Parser) for_stmt() flat.NodeId {
+ 			} else {
+ 				p.add(flat.NodeKind.empty)
+ 			}
+-			body_ids := p.parse_block_body()
++			body_ids := p.parse_vguard_loop_body(for_start, '')
+ 			// first_expr becomes init as expr_stmt
+ 			init_start := p.add_child(first_expr)
+ 			init_id := p.add_node(flat.Node{
+@@ -9897,7 +9921,15 @@ fn (mut p Parser) for_stmt() flat.NodeId {
+ 
+ 	// condition-only: `for cond { ... }`
+ 	if p.tok == .lcbr {
+-		body_ids := p.parse_block_body()
++		mut guard := ''
++		if p.vguard_record_loops {
++			if p.vguard_literal_true(first_expr) {
++				guard = 'literal_true'
++			} else if p.vguard_constant_bool(first_expr, 0) or { false } {
++				guard = 'constant_true'
++			}
++		}
++		body_ids := p.parse_vguard_loop_body(for_start, guard)
+ 		init_empty := p.add(flat.NodeKind.empty)
+ 		post_empty := p.add(flat.NodeKind.empty)
+ 		mut ids := []flat.NodeId{}
+@@ -9918,6 +9950,136 @@ fn (mut p Parser) for_stmt() flat.NodeId {
+ 	return flat.empty_node
+ }
+ 
++fn (p &Parser) vguard_literal_true(id flat.NodeId) bool {
++	if int(id) < 0 {
++		return false
++	}
++	mut node := p.a.node(id)
++	for node.kind == .paren && node.children_count == 1 {
++		node = p.a.child_node(node, 0)
++	}
++	return node.kind == .bool_literal && node.value == 'true'
++}
++
++// Only evaluate Boolean expressions whose executed operands are side-effect free.
++fn (p &Parser) vguard_constant_bool(id flat.NodeId, depth int) ?bool {
++	if int(id) < 0 || depth > 32 {
++		return none
++	}
++	node := p.a.node(id)
++	if node.kind == .bool_literal {
++		return node.value == 'true'
++	}
++	if node.children_count == 1 {
++		if node.kind == .paren {
++			return p.vguard_constant_bool(p.a.child(node, 0), depth + 1)
++		}
++		if node.kind == .prefix && node.op == .not {
++			value := p.vguard_constant_bool(p.a.child(node, 0), depth + 1)?
++			return !value
++		}
++	}
++	if node.kind != .infix || node.children_count != 2 {
++		return none
++	}
++	left := p.vguard_constant_bool(p.a.child(node, 0), depth + 1)?
++	if (node.op == .logical_or && left) || (node.op == .logical_and && !left) {
++		return left
++	}
++	right := p.vguard_constant_bool(p.a.child(node, 1), depth + 1)?
++	return match node.op {
++		.logical_and { left && right }
++		.logical_or { left || right }
++		.eq { left == right }
++		.ne { left != right }
++		else { none }
++	}
++}
++
++// A successful result describes a path that can only continue the current
++// loop or reach the next statement without an effect that could stop it.
++fn (p &Parser) vguard_loop_continues(id flat.NodeId, depth int) ?bool {
++	if int(id) < 0 || depth > 32 {
++		return none
++	}
++	node := p.a.node(id)
++	match node.kind {
++		.continue_stmt {
++			if node.value == '' {
++				return true
++			}
++		}
++		.block {
++			if node.value != '' {
++				return none
++			}
++			return p.vguard_loop_body_flow(p.a.children_of(node), depth + 1)
++		}
++		.if_expr {
++			if node.children_count !in [2, 3] {
++				return none
++			}
++			if p.vguard_constant_bool(p.a.child(node, 0), depth + 1)? {
++				return p.vguard_loop_continues(p.a.child(node, 1), depth + 1)
++			}
++			if node.children_count == 3 {
++				return p.vguard_loop_continues(p.a.child(node, 2), depth + 1)
++			}
++			return false
++		}
++		else {}
++	}
++	return none
++}
++
++fn (p &Parser) vguard_loop_body_flow(statements []flat.NodeId, depth int) ?bool {
++	for statement in statements {
++		if p.vguard_loop_continues(statement, depth)? {
++			return true
++		}
++	}
++	return false
++}
++
++@[inline]
++fn (mut p Parser) parse_vguard_loop_body(start int, guard string) []flat.NodeId {
++	if !p.vguard_record_loops {
++		return p.parse_block_body()
++	}
++	body := p.tok_pos + 1
++	labeled := p.vguard_labeled_for == start
++	statements := p.parse_block_body()
++	mut proof := ''
++	mut continue_pos := token.Pos{}
++	if guard != '' {
++		if statements.len == 0 {
++			proof = match guard {
++				'unconditional' { 'empty_unconditional_loop' }
++				'literal_true' { 'empty_literal_true_loop' }
++				else { 'empty_constant_true_loop' }
++			}
++		} else if statements.len == 1 {
++			statement := p.a.node(statements[0])
++			if statement.kind == .continue_stmt && statement.value == '' {
++				proof = 'unconditional_continue_loop'
++				continue_pos = statement.pos
++			}
++		}
++		if proof == '' && p.vguard_loop_body_flow(statements, 0) != none {
++			proof = 'constant_control_loop'
++		}
++	}
++	p.vguard_loops << VGuardLoop{
++		pos:          token.new_pos(p.cur_file_id, start)
++		body:         body
++		end:          p.prev_tok_end
++		proof:        proof
++		continue_pos: continue_pos
++		labeled:      labeled
++	}
++	return statements
++}
++
+ fn (mut p Parser) record_formatter_for_span(id flat.NodeId, start int) flat.NodeId {
+ 	if p.prefs.is_fmt && int(id) >= 0 {
+ 		p.a.nodes[int(id)].pos = p.span_to(start)
 diff --git a/vlib/v/pref/pref.v b/vlib/v/pref/pref.v
 index 81c8993a48..72a4078e74 100644
 --- a/vlib/v/pref/pref.v
@@ -1097,28 +4157,39 @@ index 81c8993a48..72a4078e74 100644
  		'-cov', '-coverage', '-profile-fns', '-bug-report-url', '-run-only', '-exclude', '-file-list',
  		'-test-runner', '-dump-c-flags', '-dump-modules', '-dump-files', '-dump-defines',
 diff --git a/vlib/v/ssa/builder.v b/vlib/v/ssa/builder.v
-index a8c6e9561b..3599573e46 100644
+index a8c6e9561b..f7f4434977 100644
 --- a/vlib/v/ssa/builder.v
 +++ b/vlib/v/ssa/builder.v
-@@ -235,6 +235,8 @@ struct IfGuardState {
+@@ -235,6 +235,9 @@ struct IfGuardState {
  // reproduces the default whole-program build.
  pub struct BuildOptions {
  pub:
-+	vguard_enabled bool
-+	vguard_track_ast bool
++	vguard_enabled         bool
++	vguard_track_ast       bool
++	vguard_native_atomics  bool
  	hot_fn                 string   // build only this function's body (hot reload)
  	skip_fn_bodies         bool     // register signatures only, mark them prototypes
  	skip_modules           []string // skip all functions declared in these modules
-@@ -338,6 +340,8 @@ pub fn build_with_options(a_ &flat.FlatAst, used_fns map[string]bool, tc &types.
+@@ -338,6 +341,9 @@ pub fn build_with_options(a_ &flat.FlatAst, used_fns map[string]bool, tc &types.
  		c_constants:              opts.c_constants
  		c_struct_layouts:         opts.c_struct_layouts
  	}
 +	b.m.vguard_enabled = opts.vguard_enabled || opts.vguard_track_ast
 +	b.m.vguard_track_ast = opts.vguard_track_ast
++	b.m.vguard_native_atomics = opts.vguard_native_atomics
  	b.m.track_uses = opts.track_uses
  	b.m.target = opts.target
  	b.void_type = TypeID(0)
-@@ -9985,6 +9989,25 @@ fn (mut b Builder) build_result_error_value(result_type TypeID, error_value Valu
+@@ -6374,7 +6380,7 @@ fn (mut b Builder) generate_void_return_body(func_id int) {
+ // the atomic operations. The other SSA targets keep plain loads and stores, which
+ // are only right for a program that runs on one thread.
+ fn (b &Builder) target_lowers_atomics() bool {
+-	return b.m.target.arch == 'arm64'
++	return b.m.target.arch == 'arm64' || b.m.vguard_native_atomics
+ }
+ 
+ fn (mut b Builder) generate_atomic_load_body(func_id int, typ TypeID) {
+@@ -9985,6 +9991,25 @@ fn (mut b Builder) build_result_error_value(result_type TypeID, error_value Valu
  
  // build_stmt builds stmt data for ssa.
  fn (mut b Builder) build_stmt(id flat.NodeId) {
@@ -1144,7 +4215,7 @@ index a8c6e9561b..3599573e46 100644
  	if int(id) < 0 {
  		return
  	}
-@@ -11467,6 +11490,24 @@ fn (mut b Builder) build_assert(node flat.Node) {
+@@ -11467,6 +11492,24 @@ fn (mut b Builder) build_assert(node flat.Node) {
  
  // build_expr builds expr data for ssa.
  fn (mut b Builder) build_expr(id flat.NodeId) ValueID {
@@ -1543,32 +4614,52 @@ index 0000000000..75ce29da51
 +	return out.str()
 +}
 diff --git a/vlib/v/ssa/ssa.v b/vlib/v/ssa/ssa.v
-index 4c81b3e1fc..64308b2de7 100644
+index 4c81b3e1fc..7202d0c6f7 100644
 --- a/vlib/v/ssa/ssa.v
 +++ b/vlib/v/ssa/ssa.v
-@@ -508,6 +508,10 @@ pub mut:
+@@ -506,15 +506,21 @@ pub struct Module {
+ pub mut:
+ 	name string
  	// errors contains unsupported source expressions encountered during SSA construction.
- 	errors     []string
- 	target     TargetData
-+	vguard_enabled bool
-+	vguard_track_ast bool
+-	errors     []string
+-	target     TargetData
+-	track_uses bool = true
+-	type_store TypeStore
+-	values     []Value
+-	instrs     []Instruction
+-	blocks     []BasicBlock
+-	funcs      []Function
+-	globals    []GlobalVar
++	errors                []string
++	target                TargetData
++	vguard_runtime_files  map[int]bool
++	vguard_enabled        bool
++	vguard_native_atomics bool
++	vguard_track_ast      bool
 +	vguard_track_rewrites bool
-+	vguard_rewrites []VGuardRewrite
- 	track_uses bool = true
- 	type_store TypeStore
- 	values     []Value
-@@ -540,6 +544,10 @@ pub mut:
++	vguard_rewrites       []VGuardRewrite
++	track_uses            bool = true
++	type_store            TypeStore
++	values                []Value
++	instrs                []Instruction
++	blocks                []BasicBlock
++	funcs                 []Function
++	globals               []GlobalVar
+ 	// C struct names: TypeID -> C struct name (e.g. for `struct stat`). Used by
+ 	// codegen to emit `typedef struct <name> ...;` and preserve the C layout.
+ 	c_struct_names map[int]string
+@@ -540,6 +546,10 @@ pub mut:
  	// Function name -> index, so registering a symbol does not scan funcs.
  	func_index map[string]int
  mut:
-+	vguard_pos token.Pos
++	vguard_pos      token.Pos
 +	vguard_ast_node int = -1
 +	// Instruction table index -> the active AST node when the instruction was built.
 +	vguard_ast_nodes map[int]VGuardAstAnchor
  	// A function worker builds one body at a time: constants are interned per
  	// function, and values of the worker's earlier functions are out of bounds.
  	is_function_worker   bool
-@@ -615,6 +623,10 @@ pub fn (mut m Module) add_instr(op OpCode, block BlockID, typ TypeID, operands [
+@@ -615,6 +625,10 @@ pub fn (mut m Module) add_instr(op OpCode, block BlockID, typ TypeID, operands [
  		block:    block
  		typ:      typ
  		operands: operands
@@ -1579,7 +4670,7 @@ index 4c81b3e1fc..64308b2de7 100644
  	}
  	val_id := m.add_value(.instruction, typ, '', instr_idx)
  	mut blk := m.blocks[block]
-@@ -640,6 +652,10 @@ pub fn (mut m Module) add_instr_front(op OpCode, block BlockID, typ TypeID, oper
+@@ -640,6 +654,10 @@ pub fn (mut m Module) add_instr_front(op OpCode, block BlockID, typ TypeID, oper
  		block:    block
  		typ:      typ
  		operands: operands
@@ -1590,7 +4681,7 @@ index 4c81b3e1fc..64308b2de7 100644
  	}
  	val_id := m.add_value(.instruction, typ, '', instr_idx)
  	mut blk := m.blocks[block]
-@@ -781,6 +797,11 @@ pub fn (mut m Module) discard_emission_since(value_count int, instruction_count
+@@ -781,6 +799,11 @@ pub fn (mut m Module) discard_emission_since(value_count int, instruction_count
  		m.const_cache.delete(key)
  	}
  	if instruction_count < m.instrs.len {
@@ -1602,7 +4693,7 @@ index 4c81b3e1fc..64308b2de7 100644
  		m.instrs.trim(instruction_count)
  	}
  	if value_count < m.values.len {
-@@ -1202,6 +1223,7 @@ pub fn (mut m Module) replace_uses(old_id ValueID, new_id ValueID) {
+@@ -1202,6 +1225,7 @@ pub fn (mut m Module) replace_uses(old_id ValueID, new_id ValueID) {
  			}
  		}
  		if changed {
@@ -1612,10 +4703,10 @@ index 4c81b3e1fc..64308b2de7 100644
  		}
 diff --git a/vlib/v/ssa/vguard.v b/vlib/v/ssa/vguard.v
 new file mode 100644
-index 0000000000..d53abf012d
+index 0000000000..3071d97ebe
 --- /dev/null
 +++ b/vlib/v/ssa/vguard.v
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,226 @@
 +module ssa
 +
 +import v.token
@@ -1631,7 +4722,110 @@ index 0000000000..d53abf012d
 +	op       OpCode
 +	pos      token.Pos
 +pub mut:
-+	symbol string
++	symbol          string
++	recovery_prefix int
++	return_home     VGuardReturnHome
++	control_homes   VGuardControlHomes
++}
++
++// VGuardControlHomes marks machine instruction boundaries where the homes
++// from the incoming SSA state have not changed.
++pub struct VGuardControlHomes {
++pub:
++	prefix_through    int
++	alternate_start   int
++	alternate_through int
++}
++
++// VGuardReturnHome identifies an SSA operand in the result register after transfer.
++pub struct VGuardReturnHome {
++pub:
++	value    ValueID
++	bytes    int
++	register string
++}
++
++// VGuardValueHome records native allocator assignments for one SSA value.
++pub struct VGuardValueHome {
++pub:
++	function         string
++	value            ValueID
++	register         string
++	frame_offset     int
++	object_offset    int
++	object_alignment int
++	object_size      int
++	redzone_before   int
++	redzone_after    int
++	argument_entry   VGuardArgumentEntry
++}
++
++// VGuardArgumentEntry records the incoming ABI home and the end of its spill.
++pub struct VGuardArgumentEntry {
++pub:
++	register          string
++	stack_offset      int = -1
++	ready             int
++	stack_adjusted    int
++	frame_ready       int
++	preserve_register bool
++}
++
++// VGuardStackRegion gives the object and its poisoned neighbors relative to the frame.
++pub struct VGuardStackRegion {
++pub:
++	offset int
++	size   int
++	before int
++	after  int
++}
++
++// vguard_stack_region takes the aligned frame depth before laying out the object.
++pub fn vguard_stack_region(depth int, size int) VGuardStackRegion {
++	redzone := 32
++	span := (size + 15) & ~15
++	return VGuardStackRegion{
++		offset: -(depth + redzone + span)
++		size:   size
++		before: redzone
++		after:  redzone + span - size
++	}
++}
++
++// The 64-bit compiler-rt __asan_global record has eight pointer-sized fields.
++pub const vguard_global_record_size = 64
++pub const vguard_global_table = 'vguard.asan.globals'
++
++pub struct VGuardGlobal {
++pub:
++	name string
++	size int
++	span int
++}
++
++// vguard_global describes one global's payload and right redzone in byte units.
++pub fn (m &Module) vguard_global(global GlobalVar) VGuardGlobal {
++	typ_size := m.type_size(global.typ)
++	mut size := if typ_size > 0 { typ_size } else { 8 }
++	if global.initial_data.len > 0 {
++		size = global.initial_data.len
++	}
++	return VGuardGlobal{
++		name: global.name
++		size: size
++		span: ((size + 15) & ~15) + 32
++	}
++}
++
++// vguard_defined_globals is ordered as the object's data layout.
++pub fn (m &Module) vguard_defined_globals() []VGuardGlobal {
++	mut globals := []VGuardGlobal{}
++	for global in m.globals {
++		if global.linkage != .external {
++			globals << m.vguard_global(global)
++		}
++	}
++	return globals
 +}
 +
 +// emission_range describes bytes attributed to one instruction.
@@ -1648,14 +4842,106 @@ index 0000000000..d53abf012d
 +		pos:      ins.pos
 +	}
 +}
++
++// vguard_runtime_function is true for code with an instruction from the traced input.
++pub fn (m &Module) vguard_runtime_function(func Function) bool {
++	if m.vguard_runtime_files.len == 0 {
++		return false
++	}
++	for block in func.blocks {
++		for value in m.blocks[block].instrs {
++			if value >= 0 && value < m.values.len && m.values[value].kind == .instruction
++				&& int(m.instrs[m.values[value].index].pos.id) in m.vguard_runtime_files {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// vguard_scalar_width reports the native scalar size that can be sampled.
++pub fn (m &Module) vguard_scalar_width(value int) int {
++	if value < 0 || value >= m.values.len {
++		return 0
++	}
++	typ := m.values[value].typ
++	if typ <= 0 || typ >= m.type_store.types.len {
++		return 0
++	}
++	if m.type_store.types[typ].kind !in [.int_t, .float_t, .ptr_t] {
++		return 0
++	}
++	size := m.type_size(typ)
++	return if size in [1, 2, 4, 8] { size } else { 0 }
++}
++
++// vguard_return_home describes a scalar result with the operand's declared type.
++pub fn (m &Module) vguard_return_home(instruction ValueID, result TypeID, register string, float_register string) VGuardReturnHome {
++	operands := m.instrs[m.values[instruction].index].operands
++	if operands.len != 1 {
++		return VGuardReturnHome{}
++	}
++	value := operands[0]
++	bytes := m.vguard_scalar_width(value)
++	if bytes == 0 || m.values[value].typ != result {
++		return VGuardReturnHome{}
++	}
++	return VGuardReturnHome{
++		value:    value
++		bytes:    bytes
++		register: if m.type_store.types[result].kind == .float_t {
++			float_register
++		} else {
++			register
++		}
++	}
++}
++
++// vguard_memory_operand identifies scalar pointer operands and access sizes.
++pub fn (m &Module) vguard_memory_operand(id int) (int, int, int) {
++	instr := m.instrs[m.values[id].index]
++	match instr.op {
++		.load, .atomic_load {
++			return 5, instr.operands[0], m.vguard_scalar_width(id)
++		}
++		.store, .atomic_store {
++			ptr := instr.operands[1]
++			ptr_type := m.values[ptr].typ
++			if ptr_type > 0 && ptr_type < m.type_store.types.len {
++				info := m.type_store.types[ptr_type]
++				if info.kind == .ptr_t && info.elem_type > 0 && info.elem_type < m.type_store.types.len {
++					elem := m.type_store.types[info.elem_type]
++					if elem.kind in [.int_t, .float_t, .ptr_t] {
++						size := m.type_size(info.elem_type)
++						if size in [1, 2, 4, 8] {
++							return 6, ptr, size
++						}
++					}
++				}
++			}
++		}
++		else {}
++	}
++	return 0, -1, 0
++}
++
++// vguard_result_value resolves a completed lowered phi copy to its destination.
++pub fn (m &Module) vguard_result_value(id int) int {
++	instr := m.instrs[m.values[id].index]
++	if instr.op == .assign && instr.operands.len == 2 {
++		return instr.operands[0]
++	}
++	return id
++}
 diff --git a/vlib/v/ssa/vguard_graph.v b/vlib/v/ssa/vguard_graph.v
 new file mode 100644
-index 0000000000..79dfe5888f
+index 0000000000..998075dfeb
 --- /dev/null
 +++ b/vlib/v/ssa/vguard_graph.v
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,282 @@
 +module ssa
 +
++import crypto.sha256
 +import strings
 +import v.flat
 +import v.errors
@@ -1664,9 +4950,11 @@ index 0000000000..79dfe5888f
 +// and the destination of lowered phi copies.
 +pub struct VGuardOperand {
 +pub:
-+	id   int
-+	role string
-+	kind string
++	id            int
++	role          string
++	kind          string
++	text          string
++	literal_bytes int
 +}
 +
 +struct VGuardAstAnchor {
@@ -1742,6 +5030,29 @@ index 0000000000..79dfe5888f
 +	}
 +}
 +
++fn vguard_operand_text(value &Value) string {
++	if value.kind !in [.constant, .argument, .global, .func_ref, .string_literal, .c_string_literal]
++		|| value.name == '' {
++		return ''
++	}
++	if value.name.len > 96 {
++		return 'sha256:' + sha256.hexhash(value.name)
++	}
++	return value.name
++}
++
++fn (m &Module) vguard_integer_literal_bytes(id ValueID) int {
++	value := m.values[id]
++	if value.kind != .constant || value.typ <= 0 || value.typ >= m.type_store.types.len {
++		return 0
++	}
++	kind := m.type_store.types[value.typ].kind
++	if kind == .int_t || (kind == .ptr_t && value.name == '0') {
++		return m.vguard_scalar_width(id)
++	}
++	return 0
++}
++
 +// vguard_graph captures the live instruction lists and compiler operand roles.
 +// Derive successor edges from terminators so this works before CFG analysis too.
 +pub fn (m &Module) vguard_graph(a &flat.FlatAst) VGuardGraph {
@@ -1774,12 +5085,22 @@ index 0000000000..79dfe5888f
 +						'use'
 +					}
 +					operands << VGuardOperand{
-+						id:   int(operand)
-+						role: role
-+						kind: if role != 'block' && operand >= 0 && operand < m.values.len {
++						id:            int(operand)
++						role:          role
++						kind:          if role != 'block' && operand >= 0 && operand < m.values.len {
 +							m.values[operand].kind.str()
 +						} else {
 +							''
++						}
++						text:          if role != 'block' && operand >= 0 && operand < m.values.len {
++							vguard_operand_text(&m.values[operand])
++						} else {
++							''
++						}
++						literal_bytes: if role == 'use' && operand >= 0 && operand < m.values.len {
++							m.vguard_integer_literal_bytes(operand)
++						} else {
++							0
 +						}
 +					}
 +				}
@@ -1852,7 +5173,14 @@ index 0000000000..79dfe5888f
 +		if index > 0 {
 +			out.write_u8(`,`)
 +		}
-+		out.write_string('{"id":${operand.id},"role":${vguard_json_quote(operand.role)},"kind":${vguard_json_quote(operand.kind)}}')
++		out.write_string('{"id":${operand.id},"role":${vguard_json_quote(operand.role)},"kind":${vguard_json_quote(operand.kind)}')
++		if operand.text != '' {
++			out.write_string(',"text":${vguard_json_quote(operand.text)}')
++		}
++		if operand.literal_bytes > 0 {
++			out.write_string(',"literal_bytes":${operand.literal_bytes}')
++		}
++		out.write_u8(`}`)
 +	}
 +	out.write_u8(`]`)
 +	if instruction.ast.node >= 0 {
@@ -1894,7 +5222,7 @@ index 0000000000..79dfe5888f
 +	return out.str()
 +}
 diff --git a/vlib/v/ssa/worker.v b/vlib/v/ssa/worker.v
-index f9871ad132..b21eb09920 100644
+index f9871ad132..a556413f4e 100644
 --- a/vlib/v/ssa/worker.v
 +++ b/vlib/v/ssa/worker.v
 @@ -127,6 +127,8 @@ fn (m &Module) new_worker_module() &Module {
@@ -1906,7 +5234,15 @@ index f9871ad132..b21eb09920 100644
  		track_uses:         false
  		type_store:         wts
  		funcs:              []Function{cap: m.funcs.len + 64}
-@@ -462,6 +464,13 @@ fn (mut b Builder) merge_function_workers(jobs []FunctionJob, fragments []Functi
+@@ -146,6 +148,7 @@ fn (m &Module) new_worker_module() &Module {
+ 		export_aliases:     unsafe { m.export_aliases }
+ 		noinline_fns:       unsafe { m.noinline_fns }
+ 	}
++	w.vguard_native_atomics = m.vguard_native_atomics
+ 	for f in m.funcs {
+ 		w.funcs << f
+ 	}
+@@ -462,6 +465,13 @@ fn (mut b Builder) merge_function_workers(jobs []FunctionJob, fragments []Functi
  	}
  	for i, fragment in fragments {
  		worker := pool_workers[fragment.worker]
